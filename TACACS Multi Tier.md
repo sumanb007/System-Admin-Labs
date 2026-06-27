@@ -33,6 +33,8 @@ This guide documents the construction of a fully centralized AAA (Authentication
 - **Layered authentication**: TACACS+ first, LDAP fallback, local last
 - **Centralized identity**: all user data lives in LDAP, consumed by all nodes
 
+<img width="900" alt="dockerNetwork" src="https://github.com/sumanb007/System-Admin-Labs/blob/main/img/proxmox-hypervisor.png">
+
 ---
 
 ## 2. Deployment Plan
