@@ -586,6 +586,15 @@ ldapsearch -x -H ldap://localhost \
   -b "dc=example,dc=com" "(uid=admin)"
 ```
 
+<img width="1100" alt="dockerNetwork" src="https://github.com/sumanb007/System-Admin-Labs/blob/main/img/ldap-syncsuccess.png">
+
+Both nodes now show the identical base64 value e1NTSEF9R09SYk5UdlpubmVuU3JrWDY2MlZsS2VuTXl2QmlZSnM= which decodes to {SSHA}GORbNTvZnnenSrkX662VlKenMyvBiYJs — the correct real password hash. Both LDAP nodes are in sync with the correct credentials.
+
+What confirms they are correct:
+
+Check ldap1 & ldap2 admin entry: exists, userPassword base64e1NTSEF9R09SYk5Udlpu...e1NTSEF9R09SYk5Udlpu...Hash matches same on both same, on bothHash is real (not placeholder).
+
+
 ---
 
 ## 10. Phase 6: TACACS & LDAP Server Nodes as LDAP Clients
