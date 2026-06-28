@@ -681,6 +681,16 @@ getent passwd admin
 
 ---
 
+When prompted:
+
+LDAP server URI: ldap://10.10.10.110
+Search base: dc=example,dc=com
+LDAP version: 3
+Make local root database admin: yes
+Does LDAP database require login: no
+LDAP account for root: cn=admin,dc=example,dc=com
+LDAP root account password: LdapAdmin!123
+
 ## 11. Phase 7: Ubuntu Client VM Provisioning
 
 Execute on **every new Ubuntu 24.04 client VM**.
