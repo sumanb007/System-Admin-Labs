@@ -468,6 +468,7 @@ ldapsearch -x -H ldap://10.10.10.110 \
   -w 'LdapAdmin!123' \
   -b "dc=example,dc=com" "(uid=admin)"
 ```
+<img width="1100" alt="dockerNetwork" src="https://github.com/sumanb007/System-Admin-Labs/blob/main/img/ldap-HAkeepalived.png">
 
 ---
 
