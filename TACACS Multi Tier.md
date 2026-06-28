@@ -235,6 +235,8 @@ ip -br address show | grep 10.10.10.120
 # Expected: ens18 UP 10.10.10.125/24 10.10.10.120/24
 ```
 
+<img width="1100" alt="dockerNetwork" src="https://github.com/sumanb007/System-Admin-Labs/blob/main/img/tac-keepalived.png">
+
 ---
 
 ## 7. Phase 3: HA LDAP Servers
