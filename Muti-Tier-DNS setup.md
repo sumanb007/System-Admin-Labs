@@ -460,3 +460,429 @@ Imagine a user requests the IP address for `www.isumanbhandari.com.np`.
   - **Where should the server keep its runtime data?**
 
 This separation keeps global server behavior, zone definitions, DNS data, and runtime files independent, making the configuration easier to maintain and less error-prone.
+
+
+# Static DNS Record Update on a Dynamic BIND9 DNS Server
+
+## Scenario
+
+Add a static DNS record:
+
+| Record     | Value                 |
+| ---------- | --------------------- |
+| Hostname   | `zimbra.accesswt.com` |
+| IP Address | `10.10.10.110`        |
+
+The BIND server is configured as a **dynamic primary zone** using:
+
+```conf
+update-policy {
+    grant ddns-key zonesub ANY;
+};
+```
+
+Because the zone is dynamic, **editing the zone file alone is not enough**. The correct workflow is to **freeze the zone**, edit the files, then **thaw the zone** so BIND reloads the updated records.
+
+---
+
+## Step 1 — Verify the Zone Configuration
+
+Check the zone configuration:
+
+```bash
+cat /etc/bind/named.conf.local
+```
+
+Example:
+
+```conf
+zone "accesswt.com" {
+    type master;
+    file "/etc/bind/zones/db.accesswt.com";
+
+    update-policy {
+        grant ddns-key zonesub ANY;
+    };
+
+    allow-transfer { key "transfer-key"; };
+    also-notify { 10.10.10.107; 10.10.10.108; };
+    notify yes;
+};
+
+zone "10.10.10.in-addr.arpa" {
+    type master;
+    file "/etc/bind/zones/db.10.10.10";
+
+    update-policy {
+        grant ddns-key zonesub ANY;
+    };
+};
+```
+
+> **Important**
+>
+> The presence of `update-policy` means the zone is **dynamic**.
+>
+> Manual edits require the zone to be **frozen** before changes are made.
+
+---
+
+## Step 2 — Backup the Zone Files
+
+```bash
+sudo cp /etc/bind/zones/db.accesswt.com \
+    /etc/bind/zones/db.accesswt.com.bak
+
+sudo cp /etc/bind/zones/db.10.10.10 \
+    /etc/bind/zones/db.10.10.10.bak
+```
+
+---
+
+## Step 3 — Freeze the Dynamic Zones
+
+Freeze both the forward and reverse zones.
+
+```bash
+sudo rndc freeze accesswt.com
+sudo rndc freeze 10.10.10.in-addr.arpa
+```
+
+Verify:
+
+```bash
+sudo rndc zonestatus accesswt.com
+```
+
+Expected:
+
+```text
+dynamic: yes
+frozen: yes
+```
+
+---
+
+## Step 4 — Edit the Forward Zone
+
+Open the zone file:
+
+```bash
+sudo nano /etc/bind/zones/db.accesswt.com
+```
+
+Add:
+
+```dns
+zimbra      IN      A       10.10.10.110
+```
+
+Example:
+
+```dns
+mail1       IN      A       10.10.10.180
+mail2       IN      A       10.10.10.181
+
+zimbra      IN      A       10.10.10.110
+```
+
+---
+
+## Step 5 — Edit the Reverse Zone
+
+Open:
+
+```bash
+sudo nano /etc/bind/zones/db.10.10.10
+```
+
+Add:
+
+```dns
+110     IN      PTR     zimbra.accesswt.com.
+```
+
+Example:
+
+```dns
+106     IN PTR ns1.accesswt.com.
+107     IN PTR ns2.accesswt.com.
+108     IN PTR ns3.accesswt.com.
+109     IN PTR ns4.accesswt.com.
+
+110     IN PTR zimbra.accesswt.com.
+
+180     IN PTR mail1.accesswt.com.
+181     IN PTR mail2.accesswt.com.
+```
+
+> **Note:** The trailing period (`.`) after the FQDN is required.
+
+---
+
+## Step 6 — Increment the SOA Serial
+
+Increase the serial number in **both** zone files.
+
+Old:
+
+```text
+2024010101
+```
+
+New:
+
+```text
+2024010102
+```
+
+Example:
+
+```dns
+@ IN SOA ns1.accesswt.com. admin.accesswt.com. (
+        2024010102
+        604800
+        86400
+        2419200
+        604800
+)
+```
+
+---
+
+## Step 7 — Validate the Zone Files
+
+Validate the forward zone:
+
+```bash
+sudo named-checkzone accesswt.com \
+    /etc/bind/zones/db.accesswt.com
+```
+
+Expected:
+
+```text
+zone accesswt.com/IN: loaded serial 2024010102
+OK
+```
+
+Validate the reverse zone:
+
+```bash
+sudo named-checkzone \
+    10.10.10.in-addr.arpa \
+    /etc/bind/zones/db.10.10.10
+```
+
+Expected:
+
+```text
+zone 10.10.10.in-addr.arpa/IN: loaded serial 2024010102
+OK
+```
+
+Validate the BIND configuration:
+
+```bash
+sudo named-checkconf
+```
+
+No output indicates the configuration is valid.
+
+---
+
+## Step 8 — Thaw the Zones
+
+Reload the updated zones:
+
+```bash
+sudo rndc thaw accesswt.com
+sudo rndc thaw 10.10.10.in-addr.arpa
+```
+
+Expected:
+
+```text
+A zone reload and thaw was started.
+Check the logs to see the result.
+```
+
+---
+
+## Step 9 — Verify the Zone Loaded
+
+Check:
+
+```bash
+sudo rndc zonestatus accesswt.com
+```
+
+Expected:
+
+```text
+serial: 2024010102
+dynamic: yes
+frozen: no
+```
+
+The important part is:
+
+```text
+frozen: no
+```
+
+The zone is now active again.
+
+---
+
+## Step 10 — Test DNS Resolution
+
+### Forward Lookup
+
+```bash
+dig @10.10.10.106 zimbra.accesswt.com
+```
+
+Expected:
+
+```text
+;; ANSWER SECTION:
+
+zimbra.accesswt.com.    604800    IN    A    10.10.10.110
+```
+
+### Reverse Lookup
+
+```bash
+dig @10.10.10.106 -x 10.10.10.110
+```
+
+Expected:
+
+```text
+110.10.10.10.in-addr.arpa.    IN    PTR    zimbra.accesswt.com.
+```
+
+### Verify with `host`
+
+```bash
+host zimbra.accesswt.com 10.10.10.106
+```
+
+Expected:
+
+```text
+zimbra.accesswt.com has address 10.10.10.110
+```
+
+### Verify with `nslookup`
+
+```bash
+nslookup zimbra.accesswt.com 10.10.10.106
+```
+
+Expected:
+
+```text
+Name: zimbra.accesswt.com
+Address: 10.10.10.110
+```
+
+---
+
+## Step 11 — Verify Slave Replication
+
+The master configuration includes:
+
+```conf
+also-notify {
+    10.10.10.107;
+    10.10.10.108;
+};
+```
+
+Verify that the slave servers have received the update:
+
+```bash
+dig @10.10.10.107 zimbra.accesswt.com
+dig @10.10.10.108 zimbra.accesswt.com
+
+dig @10.10.10.107 -x 10.10.10.110
+dig @10.10.10.108 -x 10.10.10.110
+```
+
+Expected:
+
+```text
+zimbra.accesswt.com.    IN    A    10.10.10.110
+
+110.10.10.10.in-addr.arpa.    IN    PTR    zimbra.accesswt.com.
+```
+
+---
+
+## Why Freeze and Thaw?
+
+Initially, the zone file was edited and the serial incremented, but DNS still returned the old serial:
+
+```text
+serial: 2024010101
+```
+
+This happened because the zone was configured as a **dynamic zone** (`update-policy` enabled).
+
+For dynamic zones:
+
+* Editing the zone file alone does **not** reload the in-memory zone.
+* Attempting to reload a dynamic zone directly returns:
+
+```text
+rndc: 'reload' failed: dynamic zone
+```
+
+The correct workflow is:
+
+```text
+Freeze
+    ↓
+Edit zone file
+    ↓
+Increment SOA serial
+    ↓
+Validate zone
+    ↓
+Thaw
+    ↓
+BIND reloads the zone
+```
+
+After thawing, the server correctly loaded:
+
+```text
+serial: 2024010102
+nodes: 9
+dynamic: yes
+frozen: no
+```
+
+Both forward and reverse lookups returned the expected records.
+
+---
+
+# Summary
+
+For BIND zones configured with `update-policy`:
+
+1. Back up the zone files.
+2. Freeze the zone (`rndc freeze`).
+3. Edit the forward and reverse zone files.
+4. Increment the SOA serial number.
+5. Validate with `named-checkzone`.
+6. Validate the configuration with `named-checkconf`.
+7. Thaw the zone (`rndc thaw`).
+8. Confirm the updated serial using `rndc zonestatus`.
+9. Test forward and reverse DNS resolution.
+10. Verify that the slave DNS servers received the updated records.
+
+This workflow ensures that manual changes are correctly loaded into BIND while preserving support for dynamic DNS updates.
+
