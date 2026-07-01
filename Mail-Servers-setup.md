@@ -10,7 +10,7 @@
 1. [Infrastructure Overview](#1-infrastructure-overview)
 2. [Minimum Required Resources](#2-minimum-required-resources)
 3. [Network & NAT Configuration (Proxmox Host)](#3-network--nat-configuration-proxmox-host)
-4. [DNS Server Setup (ns1 / ns2)](#4-dns-server-setup-ns1--ns2)
+4. [Update DNS of mail servers](#4-update-dns-of-mail-servers)
 5. [Axigen Mail Server Setup (Ubuntu 24)](#5-axigen-mail-server-setup-ubuntu-24)
 6. [Zimbra Mail Server Setup (Rocky Linux 9)](#6-zimbra-mail-server-setup-rocky-linux-9)
 7. [SSL/TLS Configuration](#7-ssltls-configuration)
@@ -197,13 +197,11 @@ curl -sk https://10.10.10.111:9443 | grep -i "axigen"
 # Test Zimbra reachable from host
 curl -sk https://10.10.10.110:8443 | grep -i "zimbra"
 ```
-
 <img width="900" alt="dockerNetwork" src="https://github.com/sumanb007/System-Admin-Labs/blob/main/img/iptables-dnat-rules.png">
-
 
 ---
 
-## 4. DNS Server Setup (ns1 / ns2)
+## 4. Update DNS of mail servers
 
 ### 4.1 Server Assignments
 
