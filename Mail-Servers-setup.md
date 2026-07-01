@@ -1,5 +1,5 @@
 
-# Mail Server Setup Textbook
+# Mail Server Setup Locally on PC
 ## Zimbra & Axigen Mail Server Deployment on accesswt.com
 ### Complete Setup, Configuration, Verification & Operations Guide
 
@@ -29,7 +29,7 @@
 Internet
     │
     ▼
-ISP Router (wlo1: 192.168.1.3/27)
+ISP Router (wlo1 DHCP: 192.168.1.0/27 or 172.18.0.0/23)
     │
     ▼
 awtserver (Proxmox PVE 9.2.2)
@@ -43,6 +43,8 @@ awtserver (Proxmox PVE 9.2.2)
 └── axigen.accesswt.com  10.10.10.111  [Axigen 10.6.35 - Ubuntu 24]
 ```
 
+<img width="900" alt="dockerNetwork" src="https://github.com/sumanb007/System-Admin-Labs/blob/main/img/proxmox-hypervisor2.png">
+
 ### Domain & Client Assignment
 
 | Mail Server | IP | Hosted Client Domains |
@@ -54,15 +56,6 @@ awtserver (Proxmox PVE 9.2.2)
 
 ## 2. Minimum Required Resources
 
-### awtserver (Proxmox Host)
-| Resource | Minimum | Recommended |
-|---|---|---|
-| CPU | 4 cores | 8 cores |
-| RAM | 8 GB | 16 GB |
-| Storage | 100 GB SSD | 500 GB SSD |
-| Network | 1 NIC (WiFi/wlo1) | 2 NICs (wired + WiFi) |
-| OS | Proxmox PVE 7+ | PVE 9.2.2 |
-
 ### Zimbra VM (zimbra.accesswt.com)
 | Resource | Minimum | Recommended | Actual Used |
 |---|---|---|---|
@@ -70,7 +63,7 @@ awtserver (Proxmox PVE 9.2.2)
 | RAM | 4 GB | 8 GB | 3.6 GB + 2 GB swap |
 | Storage | 40 GB | 100 GB | 17 GB root |
 | OS | RHEL 8/9, Rocky 9 | Rocky Linux 9.8 | Rocky Linux 9.8 |
-| Zimbra Version | 10.x | 10.1.16 | 10.1.16 GA |
+| Zimbra Version | 10.x | 10.1.16/10.1.15 | 10.1.16/10.1.15 GA |
 
 > **Note:** Zimbra installation is CPU/RAM intensive. Installation will fail or be interrupted on 2 vCPU / 2 GB RAM. Minimum 4 vCPU recommended for install phase.
 
@@ -92,6 +85,8 @@ awtserver (Proxmox PVE 9.2.2)
 | OS | Ubuntu 22.04+ |
 | Software | BIND9 |
 
+
+
 ---
 
 ## 3. Network & NAT Configuration (Proxmox Host)
@@ -101,7 +96,7 @@ awtserver (Proxmox PVE 9.2.2)
 **File:** `/etc/network/interfaces` on `awtserver`
 
 The Proxmox host uses:
-- `wlo1` — WiFi uplink to LAN (192.168.1.3/27), provides internet access
+- `wlo1` — WiFi uplink to LAN (192.168.1.0/27,172.18.0./23), provides internet access
 - `vmbr1` — Internal bridge (10.10.10.1/24), connects all VMs
 - NAT MASQUERADE — allows VMs to reach the internet through wlo1
 - DNAT rules — port-forward external access into specific VMs
@@ -109,34 +104,67 @@ The Proxmox host uses:
 ### 3.2 Complete interfaces file
 
 ```bash
+auto lo
+iface lo inet loopback
+
+auto nic1
+iface nic1 inet manual
+
+iface nic0 inet manual
+
+auto wlo1
+iface wlo1 inet dhcp
+        wpa-conf /etc/wpa_supplicant/wpa_supplicant.conf
+        metric 100
+
+auto vmbr0
+iface vmbr0 inet manual
+        bridge-ports nic1
+        bridge-stp off
+        bridge-fd 0
+        metric 10
+
 auto vmbr1
 iface vmbr1 inet static
-    address 10.10.10.1/24
-    bridge-ports none
-    bridge-stp off
-    bridge-fd 0
-    post-up echo 1 > /proc/sys/net/ipv4/ip_forward
-    post-up iptables -t nat -A POSTROUTING -s '10.10.10.0/24' -o wlo1 -j MASQUERADE
+        address 10.10.10.1/24
+        bridge-ports none
+        bridge-stp off
+        bridge-fd 0
+        post-up echo 1 > /proc/sys/net/ipv4/ip_forward
+        post-up iptables -t nat -A POSTROUTING -s '10.10.10.0/24' -o wlo1 -j MASQUERADE
+        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 3389 -j DNAT --to-destination 10.10.10.201:3389
+        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 2222 -j DNAT --to-destination 10.10.10.202:22
+        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 2102 -j DNAT --to-destination 10.10.10.102:22
+        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 2101 -j DNAT --to-destination 10.10.10.101:22
+        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 2225 -j DNAT --to-destination 10.10.10.125:22
+        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 2226 -j DNAT --to-destination 10.10.10.126:22
+        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 2106 -j DNAT --to-destination 10.10.10.106:22
+        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 2107 -j DNAT --to-destination 10.10.10.107:22
+        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 2108 -j DNAT --to-destination 10.10.10.108:22
+        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 2109 -j DNAT --to-destination 10.10.10.109:22
+        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 2110 -j DNAT --to-destination 10.10.10.110:22
+        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 2111 -j DNAT --to-destination 10.10.10.111:22
 
-    # SSH port forwards to VMs
-    post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 2108 -j DNAT --to-destination 10.10.10.108:22
-    post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 2109 -j DNAT --to-destination 10.10.10.109:22
-    post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 2110 -j DNAT --to-destination 10.10.10.110:22
-    post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 2111 -j DNAT --to-destination 10.10.10.111:22
 
-    # Axigen WebAdmin HTTP/HTTPS
-    post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 9000 -j DNAT --to-destination 10.10.10.111:9000
-    post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 9443 -j DNAT --to-destination 10.10.10.111:9443
+#Axigen webadmin HTTP
+        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 9000 -j DNAT --to-destination 10.10.10.111:9000
+#Axigen webadmin HTTPS
+        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 9443 -j DNAT --to-destination 10.10.10.111:9443
+#Axigen Webmail HTTPS
+        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 443 -j DNAT --to-destination 10.10.10.111:443
+#Axigen Webmail SMTP
+        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 25 -j DNAT --to-destination 10.10.10.111:25
+#Axigen SMTP Sbumission
+        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 587 -j DNAT --to-destination 10.10.10.111:587
+#Axigen IMAPS (secure IMAP Mail Retrival)
+        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 993 -j DNAT --to-destination 10.10.10.111:993
 
-    # Axigen Webmail & Mail ports
-    post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 443 -j DNAT --to-destination 10.10.10.111:443
-    post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 25 -j DNAT --to-destination 10.10.10.111:25
-    post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 587 -j DNAT --to-destination 10.10.10.111:587
-    post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 993 -j DNAT --to-destination 10.10.10.111:993
-
-    # Zimbra Webmail & Admin
-    post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 8443 -j DNAT --to-destination 10.10.10.110:8443
-    post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 7071 -j DNAT --to-destination 10.10.10.110:7071
+#Zimbra Webmail HTTPS
+        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 8443 -j DNAT --to-destination 10.10.10.110:8443
+#Zimbra Admin Console
+        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 7071 -j DNAT --to-destination 10.10.10.110:7071
+source /etc/network/interfaces.d/*
+root@awtserver:~# 
 ```
 
 ### 3.3 Apply rules immediately (without reboot)
@@ -170,7 +198,8 @@ curl -sk https://10.10.10.111:9443 | grep -i "axigen"
 curl -sk https://10.10.10.110:8443 | grep -i "zimbra"
 ```
 
-*[INSERT SCREENSHOT: iptables -t nat -L PREROUTING output showing all DNAT rules for 10.10.10.110 and 10.10.10.111]*
+<img width="900" alt="dockerNetwork" src="https://github.com/sumanb007/System-Admin-Labs/blob/main/img/iptables-dnat-rules.png">
+
 
 ---
 
