@@ -25,7 +25,7 @@
 
 ## 1. Infrastructure Overview
 
-<img width="600" alt="dockerNetwork" src="https://github.com/sumanb007/System-Admin-Labs/blob/main/img/mail_server_architecture.png">
+<img width="600" alt="dockerNetwork" src="https://github.com/sumanb007/System-Admin-Labs/blob/main/img/lab_mail_architecture.png">
 
 ```
 Internet
