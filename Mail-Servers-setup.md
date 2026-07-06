@@ -1866,6 +1866,128 @@ echo "Body" | mail -s "Test" -r test@accesswt.com admin@school.accesswt.com
 # FIX: Use -S smtp-host=10.10.10.111 flag, or use swaks instead
 ```
 
+### 11.7 Mail Transfer test ( Zimbra ~ Axigen)
+
+***Test 11.7.1 - message transfer Zimbra to Axigen***
+
+<img width="600" alt="dockerNetwork" src="https://github.com/sumanb007/System-Admin-Labs/blob/main/img/msg-trf-zimbra2axigen.png">
+
+***Checking Logs in Zimbra Server***
+
+<img width="1200" alt="dockerNetwork" src="https://github.com/sumanb007/System-Admin-Labs/blob/main/img/msg-trf-log1.png">
+
+***Line 1 — Postfix smtpd receives the message from Zimbra's own webmail***
+
+What it means:
+
+- smtpd = Postfix SMTP server daemon receiving an inbound connection
+- NOQUEUE = not yet assigned a queue ID — still in the filter decision phase
+- filter: RCPT = the smtpd policy filter fired on this RCPT TO
+- triggers FILTER smtp-amavis:[127.0.0.1]:10026 = Postfix decided to route this through Amavis on port 10026 (the outbound Amavis port — 10026 is for mail originating locally, 10024 is for inbound from internet)
+- The sender is info@consultancy.accesswt.com, originating from 10.10.10.110 (Zimbra itself — this is a locally-submitted message from a Zimbra user)
+
+***Line 2 — Queue ID assigned, message enters active queue***
+
+What it means:
+
+- qmgr = queue manager daemon
+- 1D568202F8CE = Queue ID 1 — the first queue ID this message gets. Think of it as a tracking number.
+- size=1325 = message is 1,325 bytes at this point (headers + body)
+- nrcpt=1 = 1 recipient
+- queue active = message is being processed right now, not deferred
+
+> Important: Queue IDs change as the message passes through different stages. This same message will get 3 different queue IDs before it leaves. This is normal — track the Message-ID instead for end-to-end tracing.
+
+***Lines 3–4 — Amavis receives the message on port 10026 (first pass)***
+
+What it means:
+
+- Amavis worker [5164] received this message on port 10026
+- ORIGINATING/MYNETS = Amavis recognized this as outbound mail from a trusted local network (MYNETS = 10.10.10.0/24 in your config)
+- 2WJBQ0bh4YSV = Amavis's own internal mail ID (different from Postfix Queue ID)
+- This is the first Amavis pass — checks if it should be signed, scanned, relayed
+
+***Line 5 — OpenDKIM: no signing key found (important — note this)***
+
+What it means:
+
+- OpenDKIM looked for a DKIM private key for consultancy.accesswt.com
+- Found nothing — no DKIM key has been generated for this domain yet
+- Result: message goes out without a DKIM signature — this will hurt deliverability in production
+- 6B091202F8E4 = Queue ID 2 — a new queue ID assigned after Amavis processed it
+
+> Fix: su - zimbra && /opt/zimbra/libexec/zmdkimkeyutil -a -d consultancy.accesswt.com then add the resulting TXT record to DNS.
+
+***Line 6 — Amavis forwards message back to Postfix (first pass complete)***
+
+What it means:
+
+- Amavis finished its first pass and forwarded the message back to Postfix on port 10030
+- Postfix accepted it and assigned Queue ID 6B091202F8E4
+- BODY=7BIT = message body is plain 7-bit ASCII (no attachments, no special encoding)
+
+***Line 7 — Amavis first pass result: CLEAN, Relayed***
+
+What it means:
+
+- Passed CLEAN = passed antivirus and antispam checks
+- {RelayedOutbound} = Amavis action: relay this outbound
+- Hits: - = no spam hits (dash means no rules triggered at all — very clean)
+- 1276 ms = this Amavis check took 1.276 seconds
+- queued_as: 6B091202F8E4 = new queue ID after Amavis
+- The Message-ID is the stable identifier you can use to trace across all log lines: 506982069.7.1783322704734.JavaMail.zimbra@consultancy.accesswt.com
+
+***Lines 8–9 — SECOND Amavis pass (port 10032)***
+
+What it means:
+
+- This is a second Amavis pass on port 10032 — ORIGINATING_POST means this is Zimbra's post-queue content filter (a second check after the message was re-injected)
+- Zimbra runs mail through Amavis twice for outbound: once at submission (10026), once after queue injection (10032). This is by design for thorough scanning.
+- Different Amavis worker (5165) handles this pass
+
+***Line 10 — Queue ID 2 enters active queue***
+- Queue ID 6B091202F8E4 is now 1826 bytes — grew from 1325 because Amavis added headers (X-Spam-Status, Received, Authentication-Results, etc.)
+
+***Lines 11–12 — Second Amavis pass result***
+
+What it means:
+
+- Hits: 6.276 = SpamAssassin score of 6.276 on the second pass — this is above the default 5.0 threshold for tagging. The message is being treated as borderline spam on the second scan.
+- queued_as: E1DA7202F8CE = Queue ID 3 — the final queue ID for delivery
+- size: 1791 = now 1,791 bytes after second Amavis added more headers
+
+***Line 13 — Final queue ID enters active queue***
+
+What it means:
+
+Queue ID E1DA7202F8CE is now 2211 bytes — grew again from more headers
+Status: queue active — Postfix is about to attempt delivery to 10.10.10.111:25
+
+
+***The problem: the log cuts off here***
+The last line shows queue active — Postfix is about to deliver, but the delivery result line is missing. You need to see one of these:
+
+***Run this to find the final delivery line***
+<img width="1200" alt="dockerNetwork" src="https://github.com/sumanb007/System-Admin-Labs/blob/main/img/msg-trf-log2.png">
+
+| Field | What to look for | Meaning |
+|------|------------------|--------|
+| `status=sent` | In `postfix/smtp` line | Mail left Zimbra successfully |
+| `status=deferred` | In `postfix/smtp` line | Temporary failure — will retry |
+| `status=bounced` | In `postfix/smtp` line | Permanent failure — bounced to sender |
+| `relay=axigen.accesswt.com[10.10.10.111]:25` | In `postfix/smtp` line | Delivered to Axigen specifically |
+| `dsn=2.0.0` | In `postfix/smtp` line | Delivery Status Notification: success |
+| `250 response` | In `postfix/smtp` line | Remote server accepted the message |
+
+
+```postfix/qmgr[5615]: E1DA7202F8CE: removed```
+
+Queue ID removed — Postfix is done with this message, nothing deferred.
+And postqueue -p shows Mail queue is empty — nothing stuck.
+
+```bash
+    postqueue -p
+```
 ---
 
 ## 12. Bulk Mail Operations (Push & Delete)
