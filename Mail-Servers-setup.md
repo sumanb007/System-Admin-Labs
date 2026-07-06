@@ -1,6 +1,5 @@
-
 # Mail Server Setup Locally on PC
-## Zimbra & Axigen Mail Server Deployment on accesswt.com
+### Zimbra & Axigen Mail Server Deployment on accesswt.com
 ### Complete Setup, Configuration, Verification & Operations Guide
 
 ---
@@ -10,16 +9,37 @@
 1. [Infrastructure Overview](#1-infrastructure-overview)
 2. [Minimum Required Resources](#2-minimum-required-resources)
 3. [Network & NAT Configuration (Proxmox Host)](#3-network--nat-configuration-proxmox-host)
-4. [Update DNS of mail servers](#4-update-dns-of-mail-servers)
+4. [DNS Server Setup (ns1 / ns2)](#4-dns-server-setup-ns1--ns2)
 5. [Axigen Mail Server Setup (Ubuntu 24)](#5-axigen-mail-server-setup-ubuntu-24)
 6. [Zimbra Mail Server Setup (Rocky Linux 9)](#6-zimbra-mail-server-setup-rocky-linux-9)
 7. [SSL/TLS Configuration](#7-ssltls-configuration)
 8. [Axigen Hardening](#8-axigen-hardening)
 9. [Multi-Tenant Client Provisioning](#9-multi-tenant-client-provisioning)
 10. [Mail Flow — Detailed Chain Sequence](#10-mail-flow--detailed-chain-sequence)
+    - 10.1 Lab Environment Step List (S-01 to S-112)
+    - 10.2 Production Environment Step List (P-01 to P-72)
+    - 10.3 Detailed Explanation — Lab Steps
+    - 10.4 Detailed Explanation — Production Steps
+    - 10.5 DNS Record Types Reference
+    - 10.6 Port Reference Table
+    - 10.7 Mail Queuing Detail
+    - 10.8 TLS Handshake Step by Step
+    - 10.9 Greylisting Flow
+    - 10.10 SPF / DKIM / DMARC Validation Chain
+    - 10.11 Lab vs Production Comparison
 11. [Test Cases — All Tried Scenarios](#11-test-cases--all-tried-scenarios)
 12. [Bulk Mail Operations (Push & Delete)](#12-bulk-mail-operations-push--delete)
 13. [Monitoring Commands](#13-monitoring-commands)
+14. [Troubleshooting](#14-troubleshooting)
+    - 14.1 Common Failure Points — Both Environments
+    - 14.2 Zimbra-Specific Troubleshooting
+    - 14.3 Axigen-Specific Troubleshooting
+    - 14.4 Step-by-Step Diagnostic Runbook
+    - 14.5 Quick Reference Card
+15. [Axigen Mail Operations — Complete Script Reference](#15-axigen-mail-operations--complete-script-reference)
+16. [Bulk Operations — Full Scenario Walkthrough](#16-bulk-operations--full-scenario-walkthrough)
+17. [Security Hardening Summary](#17-security-hardening-summary)
+18. [Environment Summary — Final State](#18-environment-summary--final-state)
 
 ---
 
@@ -31,7 +51,7 @@
 Internet
     │
     ▼
-ISP Router (wlo1 DHCP: 192.168.1.0/27 or 172.18.0.0/23)
+ISP Router (wlo1: 192.168.1.3/27 or 172.18.0.0/23)
     │
     ▼
 awtserver (Proxmox PVE 9.2.2)
@@ -44,7 +64,6 @@ awtserver (Proxmox PVE 9.2.2)
 ├── zimbra.accesswt.com  10.10.10.110  [Zimbra 10.1.16 - Rocky Linux 9.8]
 └── axigen.accesswt.com  10.10.10.111  [Axigen 10.6.35 - Ubuntu 24]
 ```
-
 <img width="900" alt="dockerNetwork" src="https://github.com/sumanb007/System-Admin-Labs/blob/main/img/proxmox-hypervisor2.png">
 
 ### Domain & Client Assignment
@@ -58,14 +77,23 @@ awtserver (Proxmox PVE 9.2.2)
 
 ## 2. Minimum Required Resources
 
+### awtserver (Proxmox Host)
+| Resource | Minimum | Recommended |
+|---|---|---|
+| CPU | 4 cores | 8 cores |
+| RAM | 8 GB | 16 GB |
+| Storage | 100 GB SSD | 500 GB SSD |
+| Network | 1 NIC (WiFi/wlo1) | 2 NICs (wired + WiFi) |
+| OS | Proxmox PVE 7+ | PVE 9.2.2 |
+
 ### Zimbra VM (zimbra.accesswt.com)
 | Resource | Minimum | Recommended | Actual Used |
 |---|---|---|---|
 | vCPU | 2 cores | 4 cores | 4 cores |
 | RAM | 4 GB | 8 GB | 3.6 GB + 2 GB swap |
-| Storage | 40 GB | 100 GB | 17 GB root |
+| Storage | 40 GB | 100 GB | 20 GB root |
 | OS | RHEL 8/9, Rocky 9 | Rocky Linux 9.8 | Rocky Linux 9.8 |
-| Zimbra Version | 10.x | 10.1.16/10.1.15 | 10.1.16/10.1.15 GA |
+| Zimbra Version | 10.x | 10.1.16 / 10.1.15 | 10.1.15 GA |
 
 > **Note:** Zimbra installation is CPU/RAM intensive. Installation will fail or be interrupted on 2 vCPU / 2 GB RAM. Minimum 4 vCPU recommended for install phase.
 
@@ -87,8 +115,6 @@ awtserver (Proxmox PVE 9.2.2)
 | OS | Ubuntu 22.04+ |
 | Software | BIND9 |
 
-
-
 ---
 
 ## 3. Network & NAT Configuration (Proxmox Host)
@@ -98,7 +124,7 @@ awtserver (Proxmox PVE 9.2.2)
 **File:** `/etc/network/interfaces` on `awtserver`
 
 The Proxmox host uses:
-- `wlo1` — WiFi uplink to LAN (192.168.1.0/27,172.18.0./23), provides internet access
+- `wlo1` — WiFi uplink to LAN (192.168.1.3/27), provides internet access
 - `vmbr1` — Internal bridge (10.10.10.1/24), connects all VMs
 - NAT MASQUERADE — allows VMs to reach the internet through wlo1
 - DNAT rules — port-forward external access into specific VMs
@@ -106,67 +132,34 @@ The Proxmox host uses:
 ### 3.2 Complete interfaces file
 
 ```bash
-auto lo
-iface lo inet loopback
-
-auto nic1
-iface nic1 inet manual
-
-iface nic0 inet manual
-
-auto wlo1
-iface wlo1 inet dhcp
-        wpa-conf /etc/wpa_supplicant/wpa_supplicant.conf
-        metric 100
-
-auto vmbr0
-iface vmbr0 inet manual
-        bridge-ports nic1
-        bridge-stp off
-        bridge-fd 0
-        metric 10
-
 auto vmbr1
 iface vmbr1 inet static
-        address 10.10.10.1/24
-        bridge-ports none
-        bridge-stp off
-        bridge-fd 0
-        post-up echo 1 > /proc/sys/net/ipv4/ip_forward
-        post-up iptables -t nat -A POSTROUTING -s '10.10.10.0/24' -o wlo1 -j MASQUERADE
-        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 3389 -j DNAT --to-destination 10.10.10.201:3389
-        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 2222 -j DNAT --to-destination 10.10.10.202:22
-        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 2102 -j DNAT --to-destination 10.10.10.102:22
-        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 2101 -j DNAT --to-destination 10.10.10.101:22
-        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 2225 -j DNAT --to-destination 10.10.10.125:22
-        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 2226 -j DNAT --to-destination 10.10.10.126:22
-        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 2106 -j DNAT --to-destination 10.10.10.106:22
-        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 2107 -j DNAT --to-destination 10.10.10.107:22
-        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 2108 -j DNAT --to-destination 10.10.10.108:22
-        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 2109 -j DNAT --to-destination 10.10.10.109:22
-        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 2110 -j DNAT --to-destination 10.10.10.110:22
-        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 2111 -j DNAT --to-destination 10.10.10.111:22
+    address 10.10.10.1/24
+    bridge-ports none
+    bridge-stp off
+    bridge-fd 0
+    post-up echo 1 > /proc/sys/net/ipv4/ip_forward
+    post-up iptables -t nat -A POSTROUTING -s '10.10.10.0/24' -o wlo1 -j MASQUERADE
 
+    # SSH port forwards to VMs
+    post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 2108 -j DNAT --to-destination 10.10.10.108:22
+    post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 2109 -j DNAT --to-destination 10.10.10.109:22
+    post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 2110 -j DNAT --to-destination 10.10.10.110:22
+    post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 2111 -j DNAT --to-destination 10.10.10.111:22
 
-#Axigen webadmin HTTP
-        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 9000 -j DNAT --to-destination 10.10.10.111:9000
-#Axigen webadmin HTTPS
-        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 9443 -j DNAT --to-destination 10.10.10.111:9443
-#Axigen Webmail HTTPS
-        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 443 -j DNAT --to-destination 10.10.10.111:443
-#Axigen Webmail SMTP
-        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 25 -j DNAT --to-destination 10.10.10.111:25
-#Axigen SMTP Sbumission
-        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 587 -j DNAT --to-destination 10.10.10.111:587
-#Axigen IMAPS (secure IMAP Mail Retrival)
-        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 993 -j DNAT --to-destination 10.10.10.111:993
+    # Axigen WebAdmin HTTP/HTTPS
+    post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 9000 -j DNAT --to-destination 10.10.10.111:9000
+    post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 9443 -j DNAT --to-destination 10.10.10.111:9443
 
-#Zimbra Webmail HTTPS
-        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 8443 -j DNAT --to-destination 10.10.10.110:8443
-#Zimbra Admin Console
-        post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 7071 -j DNAT --to-destination 10.10.10.110:7071
-source /etc/network/interfaces.d/*
-root@awtserver:~# 
+    # Axigen Webmail & Mail ports
+    post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 443 -j DNAT --to-destination 10.10.10.111:443
+    post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 25 -j DNAT --to-destination 10.10.10.111:25
+    post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 587 -j DNAT --to-destination 10.10.10.111:587
+    post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 993 -j DNAT --to-destination 10.10.10.111:993
+
+    # Zimbra Webmail & Admin
+    post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 8443 -j DNAT --to-destination 10.10.10.110:8443
+    post-up iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 7071 -j DNAT --to-destination 10.10.10.110:7071
 ```
 
 ### 3.3 Apply rules immediately (without reboot)
@@ -199,11 +192,12 @@ curl -sk https://10.10.10.111:9443 | grep -i "axigen"
 # Test Zimbra reachable from host
 curl -sk https://10.10.10.110:8443 | grep -i "zimbra"
 ```
+
 <img width="900" alt="dockerNetwork" src="https://github.com/sumanb007/System-Admin-Labs/blob/main/img/iptables-dnat-rules.png">
 
 ---
 
-## 4. Update DNS of mail servers
+## 4. DNS Server Setup (ns1 / ns2)
 
 ### 4.1 Server Assignments
 
@@ -994,139 +988,719 @@ zmprov -l gaa
 
 ---
 
+
 ## 10. Mail Flow — Detailed Chain Sequence
 
-### 10.1 Complete Mail Flow: Internal Sender to Internal Receiver
+> **Scenario used throughout:** `info@consultancy.accesswt.com` (Zimbra, 10.10.10.110) sends to `admin@school.accesswt.com` (Axigen, 10.10.10.111)
 
-**Scenario:** `info@consultancy.accesswt.com` (Zimbra) sends to `admin@school.accesswt.com` (Axigen)
+---
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│ STEP 1 — User composes mail in browser                          │
-│                                                                 │
-│  Browser (192.168.1.x MacBook)                                  │
-│  URL: https://192.168.1.3:8443/zimbra                          │
-│  Action: Compose → To: admin@school.accesswt.com → Send        │
-└──────────────────────────────┬──────────────────────────────────┘
-                               │ HTTPS POST (port 8443)
-                               ▼
-┌─────────────────────────────────────────────────────────────────┐
-│ STEP 2 — Proxmox NAT (awtserver)                                │
-│                                                                 │
-│  Incoming: 192.168.1.x:random → 192.168.1.3:8443              │
-│  DNAT rule: --dport 8443 → 10.10.10.110:8443                  │
-│  Translated: 192.168.1.x → 10.10.10.110:8443                  │
-│  Firewall: MASQUERADE (source NAT for return traffic)           │
-└──────────────────────────────┬──────────────────────────────────┘
-                               │ HTTPS (port 8443)
-                               ▼
-┌─────────────────────────────────────────────────────────────────┐
-│ STEP 3 — Zimbra Proxy (nginx) receives HTTPS request            │
-│                                                                 │
-│  10.10.10.110:8443                                             │
-│  nginx proxy → Zimbra mailbox webapp (jetty, port 8080 internal)│
-│  Session authenticated → mail submitted to local MTA queue      │
-└──────────────────────────────┬──────────────────────────────────┘
-                               │ Internal LMTP/Postfix handoff
-                               ▼
-┌─────────────────────────────────────────────────────────────────┐
-│ STEP 4 — Zimbra MTA (Postfix) processes outgoing message        │
-│                                                                 │
-│  From: info@consultancy.accesswt.com                           │
-│  To:   admin@school.accesswt.com                               │
-│                                                                 │
-│  Postfix checks: is school.accesswt.com local? NO              │
-│  → Performs DNS MX lookup for school.accesswt.com              │
-└──────────────────────────────┬──────────────────────────────────┘
-                               │ DNS query (UDP port 53)
-                               ▼
-┌─────────────────────────────────────────────────────────────────┐
-│ STEP 5 — DNS Resolution                                         │
-│                                                                 │
-│  Query → ns3/ns4 (10.10.10.108/109) resolver                  │
-│  ns3/ns4 → forwards to ns1 (10.10.10.106) authoritative       │
-│                                                                 │
-│  MX query: school.accesswt.com → axigen.accesswt.com (prio 10) │
-│  A query:  axigen.accesswt.com → 10.10.10.111                 │
-│                                                                 │
-│  Answer returned to Zimbra Postfix                              │
-└──────────────────────────────┬──────────────────────────────────┘
-                               │ SMTP (port 25)
-                               ▼
-┌─────────────────────────────────────────────────────────────────┐
-│ STEP 6 — Zimbra MTA delivers to Axigen SMTP                     │
-│                                                                 │
-│  Zimbra Postfix connects: 10.10.10.111:25                      │
-│  EHLO zimbra.accesswt.com                                      │
-│  STARTTLS negotiated (TLS 1.2+)                                │
-│  MAIL FROM: <info@consultancy.accesswt.com>                    │
-│  RCPT TO: <admin@school.accesswt.com>                          │
-│  DATA → message body transmitted                                │
-│  250 Mail queued for delivery                                   │
-└──────────────────────────────┬──────────────────────────────────┘
-                               │ Axigen internal delivery
-                               ▼
-┌─────────────────────────────────────────────────────────────────┐
-│ STEP 7 — Axigen receives and delivers to local mailbox          │
-│                                                                 │
-│  Axigen SMTP Receiving service                                  │
-│  Checks: is admin@school.accesswt.com a local account? YES     │
-│  Checks: SPF pass (ip4:10.10.10.110 allowed)                   │
-│  Checks: Greylisting (first attempt → 451 temp reject)         │
-│          (retry → 250 accepted)                                 │
-│  Delivers to: /var/opt/axigen/domains/school.accesswt.com/     │
-│               accounts/admin/INBOX/                             │
-└──────────────────────────────┬──────────────────────────────────┘
-                               │ User opens webmail
-                               ▼
-┌─────────────────────────────────────────────────────────────────┐
-│ STEP 8 — Recipient reads mail in browser                        │
-│                                                                 │
-│  Browser: https://192.168.1.3:443/webmail                      │
-│  DNAT: 192.168.1.3:443 → 10.10.10.111:443                     │
-│  Axigen Webmail HTTPS → authenticates admin@school.accesswt.com│
-│  Renders INBOX → message "Confidential" visible                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+### 10.1 Lab Environment — Step List
 
-### 10.2 Port Reference Table
+Every line below is one discrete, traceable step in chronological order.
 
-| Port | Protocol | Service | Direction |
-|---|---|---|---|
-| 25 | SMTP | Mail transfer between servers | Inbound/Outbound |
-| 587 | SMTP Submission | Client authenticated send | Outbound |
-| 465 | SMTPS | Implicit TLS mail submit | Outbound |
-| 993 | IMAPS | Mail retrieval (SSL) | Inbound client |
-| 995 | POP3S | Mail retrieval (SSL) | Inbound client |
-| 443 | HTTPS | Axigen Webmail | Inbound client |
-| 8443 | HTTPS | Zimbra Webmail | Inbound client |
-| 7071 | HTTPS | Zimbra Admin Console | Admin only |
-| 9443 | HTTPS | Axigen WebAdmin | Admin only |
-| 53 | DNS UDP/TCP | Name resolution | Internal |
-
-### 10.3 DNS Resolution Chain
+#### Sender Side — Browser to Zimbra
 
 ```
-Mail Client
-    │
-    ├─► asks: what is MX for school.accesswt.com?
-    │
-    ▼
-ns3/ns4 (10.10.10.108/109) — Resolvers
-    │
-    ├─► forwards authoritative query to ns1 (10.10.10.106)
-    │
-    ▼
-ns1 (10.10.10.106) — Authoritative Master
-    │
-    ├─► answers: MX 10 axigen.accesswt.com
-    ├─► answers: A  axigen.accesswt.com = 10.10.10.111
-    │
-    ▼
-Answer returned: deliver to 10.10.10.111:25
+S-01  User opens browser, navigates to https://192.168.1.3:8443
+S-02  Browser initiates TCP connection to 192.168.1.3:8443
+S-03  Browser performs TLS ClientHello with 192.168.1.3:8443
+S-04  Proxmox awtserver receives packet on wlo1 (192.168.1.3)
+S-05  iptables PREROUTING DNAT rule fires:
+        192.168.1.3:8443 rewritten to 10.10.10.110:8443
+S-06  Kernel routes packet via vmbr1 bridge to Zimbra VM
+S-07  Zimbra nginx proxy receives HTTPS on 10.10.10.110:8443
+S-08  nginx performs TLS handshake, presents Zimbra self-signed certificate
+S-09  User accepts certificate warning (self-signed in lab)
+S-10  nginx terminates TLS, decrypts request payload
+S-11  nginx forwards plain HTTP internally to Zimbra Jetty on 127.0.0.1:8080
+S-12  Zimbra Jetty (mailbox service) receives HTTP request
+S-13  Jetty validates ZM_AUTH_TOKEN session cookie
+S-14  Zimbra webmail UI loads in browser
+S-15  User composes email: To, Subject, Body
+S-16  User clicks Send
+S-17  Browser sends HTTPS POST /service/soap/SendMsgRequest to 192.168.1.3:8443
+S-18  POST tunnels through DNAT to Zimbra Jetty at 127.0.0.1:8080
+```
+
+#### Zimbra MTA Processing
+
+```
+S-19  Jetty validates recipient address format
+S-20  Jetty generates unique Message-ID header
+S-21  Jetty saves copy of message to Sent folder via internal LMTP (port 7025)
+S-22  Jetty passes outgoing message to Postfix via /opt/zimbra/common/sbin/sendmail
+S-23  Postfix pickup daemon collects message from sendmail pipe
+S-24  Postfix cleanup daemon adds/normalizes headers (Date, Message-ID, etc.)
+S-25  Postfix qmgr assigns Queue ID
+S-26  qmgr places message in ACTIVE queue
+S-27  qmgr checks: is school.accesswt.com in mydestination?          NO
+S-28  qmgr checks: is school.accesswt.com in relay_domains?          NO
+S-29  qmgr checks: is school.accesswt.com in virtual_mailbox_domains? NO
+S-30  Decision: REMOTE delivery required — hand to smtp transport
+S-31  Postfix smtp client process starts for this delivery attempt
+```
+
+#### DNS Resolution
+
+```
+S-32  Postfix smtp queries DNS resolver: school.accesswt.com MX?
+S-33  Query sent UDP port 53 to 10.10.10.108 (ns3 resolver)
+S-34  ns3 checks local cache — NOT cached
+S-35  ns3 forwards query to ns1 (10.10.10.106) authoritative server
+S-36  ns1 receives query
+S-37  ns1 reads /etc/bind/zones/db.accesswt.com zone file
+S-38  ns1 finds: school.accesswt.com MX 10 axigen.accesswt.com
+S-39  ns1 returns answer to ns3
+S-40  ns3 caches the MX answer with TTL=604800
+S-41  ns3 returns MX answer to Postfix
+S-42  Postfix receives: MX priority 10, hostname axigen.accesswt.com
+S-43  Postfix queries DNS again: axigen.accesswt.com A?
+S-44  ns3 checks cache — may be cached
+S-45  ns1 returns: axigen.accesswt.com A 10.10.10.111
+S-46  Postfix now has delivery target: 10.10.10.111 port 25
+```
+
+#### Network Layer — Zimbra to Axigen
+
+```
+S-47  Postfix smtp opens TCP socket to 10.10.10.111:25
+S-48  TCP SYN packet sent from 10.10.10.110:random to 10.10.10.111:25
+S-49  Both IPs are on vmbr1 bridge (10.10.10.0/24) — no NAT needed
+S-50  Axigen responds with TCP SYN-ACK
+S-51  Zimbra sends TCP ACK — 3-way handshake complete
+S-52  TCP session established
+```
+
+#### SMTP Handshake
+
+```
+S-53  Axigen sends: 220 axigen.accesswt.com Axigen ESMTP ready
+S-54  Zimbra sends: EHLO zimbra.accesswt.com
+S-55  Axigen responds 250 with capability list:
+        250-PIPELINING
+        250-AUTH PLAIN LOGIN CRAM-MD5 DIGEST-MD5 GSSAPI
+        250-8BITMIME / BINARYMIME / CHUNKING
+        250-SIZE 10485760
+        250-STARTTLS
+        250 OK
+S-56  Zimbra detects STARTTLS in capabilities
+S-57  Zimbra sends: STARTTLS
+S-58  Axigen responds: 220 Go ahead
+S-59  TLS ClientHello sent by Zimbra (TLS 1.2/1.3 offered)
+S-60  TLS ServerHello sent by Axigen (version + cipher selected)
+S-61  Axigen sends Certificate (CN=axigen.accesswt.com, self-signed in lab)
+S-62  TLS key exchange performed (ECDHE or RSA)
+S-63  Both sides send ChangeCipherSpec
+S-64  Both sides send Finished (encrypted handshake hash)
+S-65  TLS session fully established — all further data encrypted
+S-66  Zimbra sends EHLO again (required after STARTTLS — RFC 3207)
+S-67  Axigen responds 250 capabilities (fresh, over TLS)
+```
+
+#### SMTP Envelope
+
+```
+S-68  Zimbra sends: MAIL FROM:<info@consultancy.accesswt.com>
+S-69  Axigen validates sender address format
+S-70  Axigen responds: 250 Sender accepted
+S-71  Zimbra sends: RCPT TO:<admin@school.accesswt.com>
+S-72  Axigen checks: is admin@school.accesswt.com a valid local account? YES
+S-73  Axigen checks greylisting: is sender+recipient+IP tuple new?
+S-74a IF new tuple: Axigen responds 451 Temporary rejected by greylisting
+S-74b Zimbra Postfix receives 451 (temporary failure) — queues for retry
+S-74c Postfix places message in DEFERRED queue
+S-74d Postfix retries after ~5 minutes
+S-74e On retry: greylisted tuple is now whitelisted — passes
+S-75  Axigen responds: 250 Recipient accepted
+S-76  Zimbra sends: DATA
+S-77  Axigen responds: 354 Ready to receive data; remember CRLF.CRLF
+```
+
+#### Message Transfer
+
+```
+S-78  Zimbra transmits full RFC 5322 message over TLS:
+        Received: from zimbra.accesswt.com ...
+        Message-ID: <20260701.070201.abc123@zimbra.accesswt.com>
+        From: info@consultancy.accesswt.com
+        To: admin@school.accesswt.com
+        Subject: Confidential
+        Date: Tue, 01 Jul 2026 07:02:01 +0545
+        MIME-Version: 1.0
+        Content-Type: text/plain; charset=UTF-8
+        [blank line — header/body separator — REQUIRED]
+        [message body text]
+S-79  Zimbra sends: . (single dot on its own line — end of DATA)
+S-80  Axigen responds: 250 Mail queued for delivery
+S-81  Zimbra sends: QUIT
+S-82  Axigen responds: 221 Good bye
+S-83  TCP FIN — connection gracefully closed
+S-84  Zimbra Postfix logs: status=sent (250 Mail queued for delivery)
+S-85  Message removed from Postfix active queue
+```
+
+#### Axigen Internal Processing
+
+```
+S-86  Axigen Queue Processing picks up message from incoming queue
+S-87  Axigen checks SPF: does 10.10.10.110 match SPF for consultancy.accesswt.com?
+        DNS lookup: consultancy.accesswt.com TXT
+        Record: v=spf1 mx ip4:10.10.10.110 ~all
+        Result: PASS
+S-88  Axigen antispam engine analyzes headers and body
+S-89  Antispam score calculated — below threshold
+S-90  Axigen antivirus engine scans body and any attachments
+S-91  Antivirus result: CLEAN
+S-92  Axigen resolves admin@school.accesswt.com to local mailbox path
+S-93  Axigen checks mailbox quota — under limit
+S-94  Axigen writes .eml file to:
+        /var/opt/axigen/domains/school.accesswt.com/accounts/admin/INBOX/
+S-95  Axigen updates mailbox folder index and message count
+S-96  Axigen logs successful delivery with timestamp and Message-ID
+```
+
+#### Receiver Side — Axigen to Browser
+
+```
+S-97   Recipient opens browser, navigates to https://192.168.1.3:443
+S-98   Browser initiates TCP connection to 192.168.1.3:443
+S-99   Browser performs TLS ClientHello with 192.168.1.3:443
+S-100  Proxmox awtserver receives packet on wlo1
+S-101  iptables PREROUTING DNAT rule fires:
+          192.168.1.3:443 rewritten to 10.10.10.111:443
+S-102  Kernel routes packet via vmbr1 to Axigen VM
+S-103  Axigen Webmail HTTPS service receives connection on 10.10.10.111:443
+S-104  Axigen presents SSL certificate (CN=axigen.accesswt.com)
+S-105  TLS handshake completes — connection encrypted
+S-106  Axigen serves webmail login page
+S-107  Recipient enters: admin@school.accesswt.com + password
+S-108  Axigen authenticates credentials against local account store
+S-109  Authentication success — session created
+S-110  Axigen webmail reads INBOX from local file store
+S-111  Axigen renders INBOX — shows "Confidential" from info@consultancy.accesswt.com
+S-112  Browser displays message to recipient — mail flow complete
+```
+
+*[INSERT SCREENSHOT: Axigen webmail inbox of admin@school.accesswt.com showing "Confidential" message with correct From, Subject, and Date]*
+
+---
+
+### 10.2 Production Environment — Step List
+
+> Steps changed from lab are marked `[PROD-CHANGE]`. New production-only steps are marked `[PROD-NEW]`.
+
+#### Sender Side
+
+```
+P-01  User opens browser → https://mail.consultancy.accesswt.com           [PROD-CHANGE]
+P-02  Browser queries public DNS (8.8.8.8) for A record                    [PROD-NEW]
+P-03  Cloudflare/Route53 returns: mail.consultancy.accesswt.com A 1.2.3.4  [PROD-NEW]
+P-04  Browser connects to 1.2.3.4:443                                       [PROD-CHANGE]
+P-05  ISP/cloud firewall: allow 443 inbound, forward to Zimbra server       [PROD-NEW]
+P-06  Zimbra nginx presents Let's Encrypt certificate (trusted by browsers) [PROD-CHANGE]
+P-07  Browser trusts cert — no security warning                             [PROD-CHANGE]
+P-08  nginx terminates TLS, forwards to Jetty on 127.0.0.1:8080
+P-09  Jetty validates session, user composes email, clicks Send
+P-10  Browser sends HTTPS POST /service/soap/SendMsgRequest
+P-11  Jetty processes request, generates Message-ID, saves to Sent folder
+P-12  Jetty passes message to Postfix via sendmail
+```
+
+#### Zimbra MTA (Production Additions)
+
+```
+P-13  Postfix pickup collects message
+P-14  Postfix cleanup normalizes headers
+P-15  Postfix milter calls OpenDKIM                                         [PROD-NEW]
+P-16  OpenDKIM signs message with private key for consultancy.accesswt.com  [PROD-NEW]
+        DKIM-Signature: v=1; a=rsa-sha256; d=consultancy.accesswt.com;
+          s=mail; h=from:to:subject:date:message-id; b=<signature>
+P-17  DKIM-Signature header added to message                                [PROD-NEW]
+P-18  qmgr routes message as remote delivery
+P-19  Postfix smtp client starts
+```
+
+#### DNS Resolution (Production — Full Recursive)
+
+```
+P-20  Postfix queries public resolver for school.accesswt.com MX            [PROD-CHANGE]
+P-21  Resolver initiates full recursive resolution                           [PROD-NEW]
+P-22  Resolver queries root nameservers (a.root-servers.net etc.)           [PROD-NEW]
+P-23  Root servers refer to .com TLD nameservers                            [PROD-NEW]
+P-24  .com TLD refers to Cloudflare nameservers for accesswt.com            [PROD-NEW]
+P-25  Cloudflare returns: school.accesswt.com MX 10 axigen.accesswt.com     [PROD-CHANGE]
+P-26  Resolver caches with production TTL (300-3600 sec)                    [PROD-CHANGE]
+P-27  Postfix receives: MX 10 axigen.accesswt.com
+P-28  Postfix queries A record: axigen.accesswt.com A 5.6.7.8 (public IP)  [PROD-CHANGE]
+P-29  Postfix will deliver to 5.6.7.8:25 over public internet              [PROD-CHANGE]
+```
+
+#### Network — Public Internet Transit
+
+```
+P-30  Postfix opens TCP to 5.6.7.8:25                                       [PROD-CHANGE]
+P-31  Packets traverse ISP network, multiple BGP router hops                [PROD-NEW]
+P-32  Axigen cloud/ISP firewall: allow port 25 inbound from anywhere        [PROD-NEW]
+P-33  TCP 3-way handshake complete over public internet
+```
+
+#### SMTP Handshake + Enhanced Security Checks
+
+```
+P-34  220 banner, EHLO, STARTTLS — same as lab
+P-35  Axigen presents Let's Encrypt certificate                              [PROD-CHANGE]
+P-36  Certificate trusted by Zimbra — no verification errors                [PROD-CHANGE]
+P-37  TLS session established
+P-38  Zimbra sends: MAIL FROM:<info@consultancy.accesswt.com>
+P-39  Axigen performs PTR lookup on connecting IP 1.2.3.4                   [PROD-NEW]
+P-40  PTR result: 1.2.3.4 PTR zimbra.accesswt.com                          [PROD-NEW]
+P-41  FCrDNS check: zimbra.accesswt.com A 1.2.3.4? YES — match             [PROD-NEW]
+P-42  Axigen checks RBL (Spamhaus, SpamCop) for 1.2.3.4                    [PROD-NEW]
+P-43  RBL result: CLEAN                                                      [PROD-NEW]
+P-44  250 Sender accepted
+P-45  Zimbra sends: RCPT TO:<admin@school.accesswt.com>
+P-46  Greylisting check (same as lab)
+P-47  250 Recipient accepted
+P-48  DATA command, message transmitted including DKIM-Signature header     [PROD-CHANGE]
+P-49  250 Mail queued — QUIT — TCP closed
+```
+
+#### Axigen Internal Processing (Full Validation)
+
+```
+P-50  Queue Processing picks up message
+P-51  SPF check: 1.2.3.4 matches v=spf1 ip4:1.2.3.4 -all?  PASS          [PROD-CHANGE]
+P-52  DKIM: extract DKIM-Signature header                                   [PROD-NEW]
+P-53  DNS lookup: mail._domainkey.consultancy.accesswt.com TXT → public key [PROD-NEW]
+P-54  Verify signature against message headers+body using public key         [PROD-NEW]
+P-55  DKIM result: PASS                                                      [PROD-NEW]
+P-56  DMARC: lookup _dmarc.consultancy.accesswt.com TXT                     [PROD-NEW]
+P-57  Policy: p=quarantine                                                   [PROD-NEW]
+P-58  Alignment: SPF domain == From domain — ALIGNED                        [PROD-NEW]
+P-59  Alignment: DKIM domain == From domain — ALIGNED                       [PROD-NEW]
+P-60  DMARC result: PASS                                                     [PROD-NEW]
+P-61  Authentication-Results header added to message:                        [PROD-NEW]
+        spf=pass dkim=pass dmarc=pass
+P-62  Antispam scoring (boosted by auth-pass results)
+P-63  Antivirus scan: CLEAN
+P-64  Write to /var/opt/axigen/domains/school.accesswt.com/accounts/admin/INBOX/
+P-65  Index updated, delivery logged
+```
+
+#### Receiver Side (Production)
+
+```
+P-66  Recipient opens browser → https://mail.school.accesswt.com            [PROD-CHANGE]
+P-67  Public DNS: mail.school.accesswt.com A 5.6.7.8                        [PROD-CHANGE]
+P-68  Cloud firewall: allow 443 inbound                                      [PROD-NEW]
+P-69  Axigen presents Let's Encrypt cert — browser trusts it                [PROD-CHANGE]
+P-70  Recipient logs in, Axigen serves INBOX
+P-71  Message shown with Authentication-Results: spf=pass dkim=pass dmarc=pass [PROD-NEW]
+P-72  Recipient reads mail — flow complete
 ```
 
 ---
+
+### 10.3 Detailed Explanation — Lab Steps
+
+#### S-01 to S-06 — Browser to Proxmox NAT
+
+The MacBook sends HTTPS to `192.168.1.3:8443`. This IP belongs to `wlo1` on `awtserver` — the Proxmox host acting purely as a NAT gateway. The Linux kernel processes `iptables PREROUTING` **before routing**, so the DNAT rule fires first:
+
+```bash
+# Rule effect:
+#   BEFORE: destination = 192.168.1.3:8443
+#   AFTER:  destination = 10.10.10.110:8443
+# Then FORWARD chain routes via vmbr1 to Zimbra VM
+
+# Verify on awtserver
+iptables -t nat -L PREROUTING -n --line-numbers | grep 8443
+cat /proc/sys/net/ipv4/ip_forward   # must output: 1
+```
+
+*[INSERT SCREENSHOT: iptables -t nat -L PREROUTING -n showing DNAT rule for port 8443 to 10.10.10.110]*
+
+#### S-07 to S-18 — Zimbra nginx and Jetty
+
+nginx listens on port 8443, terminates TLS, and forwards plain HTTP to Jetty on `127.0.0.1:8080`. Jetty handles the SOAP API, generates the Message-ID, saves to Sent folder via LMTP port 7025, then hands the outgoing message to Postfix via the local sendmail binary.
+
+```bash
+# Watch the SOAP call arrive in real time
+sudo tail -f /opt/zimbra/log/mailbox.log | grep "SendMsgRequest\|info@consultancy"
+```
+
+*[INSERT SCREENSHOT: mailbox.log showing SendMsgRequest with account=info@consultancy.accesswt.com]*
+
+#### S-19 to S-31 — Postfix Queue Processing
+
+Postfix uses a multi-daemon architecture — each daemon does exactly one job:
+
+| Daemon | Responsibility |
+|---|---|
+| `pickup` | Reads messages from local sendmail pipe |
+| `cleanup` | Adds missing headers, normalizes addresses |
+| `qmgr` | Schedules and manages delivery queue |
+| `smtp` | Makes outbound SMTP connections |
+| `smtpd` | Accepts inbound SMTP connections |
+
+```bash
+# Verify routing decision parameters
+su - zimbra
+postconf mydestination
+postconf relay_domains
+postconf mynetworks
+watch -n1 "postqueue -p | head -20"
+```
+
+*[INSERT SCREENSHOT: postconf mydestination output confirming school.accesswt.com is NOT listed as local]*
+
+#### S-32 to S-46 — DNS Resolution in Lab
+
+```
+Postfix → ns3 (10.10.10.108) [cache miss]
+       → ns1 (10.10.10.106) authoritative
+       → ns1 reads db.accesswt.com
+       → Returns: MX 10 axigen.accesswt.com
+       → ns3 caches with TTL=604800
+       → Returns to Postfix
+
+Postfix → ns3: axigen.accesswt.com A?
+       → ns1: 10.10.10.111
+       → Postfix connects to 10.10.10.111:25
+```
+
+```bash
+# Trace the full resolution
+dig @10.10.10.108 school.accesswt.com MX +trace
+dig @10.10.10.106 school.accesswt.com MX +norecurse
+```
+
+*[INSERT SCREENSHOT: dig @10.10.10.108 school.accesswt.com MX showing ANSWER SECTION with axigen.accesswt.com MX 10]*
+
+#### S-47 to S-52 — TCP Connection (Internal)
+
+Both servers are on `10.10.10.0/24` via `vmbr1` — no NAT, no internet traversal.
+
+```bash
+# Monitor live connections
+ss -tn state established "( dport = :25 )"
+```
+
+#### S-53 to S-67 — SMTP Handshake and STARTTLS
+
+STARTTLS upgrades a plain TCP connection to TLS without changing ports. The client MUST send EHLO again after TLS upgrade (RFC 3207 requirement).
+
+```bash
+# Manually test the full SMTP+STARTTLS handshake
+openssl s_client -connect 10.10.10.111:25 -starttls smtp 2>/dev/null \
+  | grep -E "Protocol|Cipher|subject|issuer|notBefore|notAfter"
+```
+
+*[INSERT SCREENSHOT: openssl s_client -starttls smtp output showing Protocol TLS 1.2/1.3, Cipher, and CN=axigen.accesswt.com]*
+
+#### S-68 to S-85 — Envelope, Data Transfer, Greylisting
+
+The SMTP **envelope** (MAIL FROM / RCPT TO) is separate from **headers** (From: / To:). Greylisting temporarily rejects the first delivery attempt from any new sender+recipient+IP combination — legitimate MTAs retry, spam software does not.
+
+```bash
+# On Axigen — see greylisting
+sudo grep -i "greylist\|451" /var/log/axigen/smtp-in.log | tail -10
+
+# On Zimbra — watch delivery
+sudo grep "status=" /var/log/zimbra.log | tail -5
+# Expected: status=sent (250 Mail queued for delivery)
+```
+
+*[INSERT SCREENSHOT: /var/log/axigen/smtp-in.log showing 451 greylisting then 250 accepted on retry]*
+*[INSERT SCREENSHOT: /var/log/zimbra.log showing postfix status=sent for admin@school.accesswt.com]*
+
+#### S-86 to S-96 — Axigen Internal Processing
+
+```bash
+# Watch processing in real time
+sudo tail -f /var/log/axigen/smtp-in.log
+
+# Verify .eml file written to disk
+sudo find /var/opt/axigen/domains/school.accesswt.com/accounts/admin/INBOX \
+  -name "*.eml" | sort | tail -3
+```
+
+*[INSERT SCREENSHOT: find command showing .eml file in /var/opt/axigen/domains/school.accesswt.com/accounts/admin/INBOX/]*
+
+#### S-97 to S-112 — Recipient Reads Mail
+
+Same DNAT pattern: `192.168.1.3:443` → `10.10.10.111:443`. Axigen Webmail reads directly from the local file store.
+
+```bash
+curl -sk https://10.10.10.111:443/webmail | grep -i "axigen\|login"
+```
+
+---
+
+### 10.4 Detailed Explanation — Production Steps
+
+#### P-01 to P-06 — Public DNS and Certificate Trust
+
+In production three things are required that do not exist in the lab:
+- A record in **public DNS** (Cloudflare/Route53)
+- A **publicly routable IP address**
+- A **TLS certificate from a trusted CA** (Let's Encrypt or commercial)
+
+```bash
+# Set up Let's Encrypt on Axigen
+sudo apt install -y certbot
+sudo certbot certonly --standalone -d axigen.accesswt.com
+
+# Auto-renewal hook
+sudo tee /etc/letsencrypt/renewal-hooks/deploy/axigen-reload.sh << 'HOOK'
+#!/bin/bash
+bash -c 'cat /etc/letsencrypt/live/axigen.accesswt.com/fullchain.pem \
+  /etc/letsencrypt/live/axigen.accesswt.com/privkey.pem \
+  > /var/opt/axigen/axigenmail.pem'
+chown axigen:axigen /var/opt/axigen/axigenmail.pem
+systemctl reload axigen
+HOOK
+sudo chmod +x /etc/letsencrypt/renewal-hooks/deploy/axigen-reload.sh
+sudo certbot renew --dry-run
+```
+
+#### P-15 to P-17 — DKIM Signing
+
+Every outgoing message in production must be DKIM signed. Zimbra includes OpenDKIM which signs before Postfix sends.
+
+```bash
+# Generate DKIM keys
+su - zimbra
+/opt/zimbra/libexec/zmdkimkeyutil -a -d consultancy.accesswt.com
+# Output: TXT record must be added to PUBLIC DNS:
+# mail._domainkey.consultancy.accesswt.com TXT "v=DKIM1; k=rsa; p=..."
+
+zmcontrol status | grep opendkim
+# Expected: opendkim   Running
+```
+
+#### P-21 to P-26 — Full Recursive DNS (Production)
+
+In production the resolver does full recursion through root → TLD → authoritative. TTL should be 300–3600 seconds (not 604800 as in lab) to allow faster failover.
+
+```bash
+# Verify full resolution path
+dig school.accesswt.com MX +trace
+
+# Check production TTL
+dig school.accesswt.com MX | grep "IN.*MX"
+```
+
+#### P-39 to P-43 — PTR, FCrDNS, and RBL (Production Critical)
+
+These three checks do not exist in the lab but are critical in production. Gmail and Outlook reject mail without PTR.
+
+```bash
+# Verify PTR is set (ask ISP to configure)
+dig -x 1.2.3.4 +short
+# Expected: zimbra.accesswt.com.
+
+# Verify FCrDNS (both directions must agree)
+dig -x 1.2.3.4 +short        # should: zimbra.accesswt.com.
+dig zimbra.accesswt.com A +short  # should: 1.2.3.4
+
+# Check blacklist status
+host 4.3.2.1.zen.spamhaus.org
+# NXDOMAIN = not blacklisted (good)
+```
+
+#### P-50 to P-61 — Full SPF + DKIM + DMARC
+
+```bash
+# Verify all three records in PUBLIC DNS
+dig +short TXT consultancy.accesswt.com | grep spf
+dig +short TXT mail._domainkey.consultancy.accesswt.com
+dig +short TXT _dmarc.consultancy.accesswt.com
+```
+
+After all three pass, Axigen adds to the message:
+```
+Authentication-Results: axigen.accesswt.com;
+  spf=pass smtp.mailfrom=consultancy.accesswt.com;
+  dkim=pass header.d=consultancy.accesswt.com;
+  dmarc=pass header.from=consultancy.accesswt.com
+```
+
+---
+
+### 10.5 DNS Record Types — Complete Reference
+
+| Record | Lab Example | Purpose |
+|---|---|---|
+| MX | school.accesswt.com MX 10 axigen.accesswt.com | Which server receives mail |
+| A | axigen.accesswt.com A 10.10.10.111 | IP of MX host |
+| PTR | 111.10.10.10.in-addr.arpa PTR axigen.accesswt.com | Reverse DNS — required in production |
+| TXT/SPF | school.accesswt.com TXT "v=spf1 ip4:10.10.10.111 ~all" | Sender authorization |
+| TXT/DKIM | mail._domainkey.school.accesswt.com TXT "v=DKIM1; k=rsa; p=..." | Signing key |
+| TXT/DMARC | _dmarc.school.accesswt.com TXT "v=DMARC1; p=quarantine" | Policy enforcement |
+
+```bash
+# Verify all mail-related records for a domain
+DOMAIN="school.accesswt.com"
+NS="10.10.10.106"
+
+for TYPE in MX TXT; do
+  echo "=== $DOMAIN $TYPE ==="
+  dig @$NS $DOMAIN $TYPE +short
+done
+
+echo "=== PTR ==="
+dig @$NS -x 10.10.10.111 +short
+
+echo "=== DKIM ==="
+dig @$NS mail._domainkey.$DOMAIN TXT +short
+
+echo "=== DMARC ==="
+dig @$NS _dmarc.$DOMAIN TXT +short
+```
+
+---
+
+### 10.6 Port Reference Table
+
+| Port | Protocol | Service | Lab | Production |
+|---|---|---|---|---|
+| 25 | TCP | SMTP server-to-server | Internal only | Open to internet |
+| 80 | TCP | HTTP redirect | Internal | Open |
+| 143 | TCP | IMAP plain | Avoid | Disabled |
+| 443 | TCP | HTTPS Webmail (Axigen) | DNAT from 192.168.1.3 | Public |
+| 465 | TCP | SMTPS implicit TLS | Internal | Open |
+| 587 | TCP | SMTP Submission STARTTLS | Internal | Open |
+| 993 | TCP | IMAPS | DNAT from 192.168.1.3 | Public |
+| 995 | TCP | POP3S | Optional | Optional |
+| 7071 | TCP | Zimbra Admin Console | DNAT from 192.168.1.3 | VPN only |
+| 8443 | TCP | Zimbra Webmail HTTPS | DNAT from 192.168.1.3 | Public |
+| 9443 | TCP | Axigen WebAdmin HTTPS | DNAT from 192.168.1.3 | VPN only |
+
+---
+
+### 10.7 Mail Queuing — Complete Detail
+
+```
+Message submitted via sendmail pipe
+  MAILDROP queue (pickup reads)
+  INCOMING queue (cleanup processes)
+  ACTIVE queue (qmgr schedules, max 20k messages)
+    SUCCESS  → removed, logged
+    4xx fail → DEFERRED queue
+               Retry: 5min, 10min, 20min ... up to 5 days
+               After 5 days → permanent bounce to sender
+    5xx fail → immediate bounce, removed
+```
+
+```bash
+su - zimbra
+postqueue -p          # view queue
+postqueue -f          # force flush all deferred
+postcat -q QUEUEID    # read specific message + reason
+postsuper -d QUEUEID  # delete specific message
+postsuper -d ALL deferred   # delete all deferred (use carefully)
+```
+
+---
+
+### 10.8 TLS Handshake — Step by Step
+
+```
+1.  TCP connection established (plain)
+2.  220 SMTP banner
+3.  EHLO → 250-STARTTLS in capabilities
+4.  STARTTLS → 220 Go ahead
+    --- TLS handshake ---
+5.  ClientHello: TLS versions + ciphers offered
+6.  ServerHello: version + cipher selected
+7.  Server sends Certificate (CN=axigen.accesswt.com)
+8.  Key exchange (ECDHE)
+9.  Both send ChangeCipherSpec + Finished
+    --- All data now encrypted ---
+10. Client sends EHLO again (RFC 3207 requirement)
+11. Server sends 250 capabilities over TLS
+```
+
+```bash
+# Full TLS inspection
+openssl s_client -connect 10.10.10.111:25 -starttls smtp 2>/dev/null \
+  | grep -E "Protocol|Cipher|subject|notBefore|notAfter"
+
+# Verify weak TLS rejected
+openssl s_client -connect 10.10.10.111:993 -tls1_1 2>&1 | grep -i error
+# Expected: handshake failure
+
+# Verify TLS 1.2 accepted
+openssl s_client -connect 10.10.10.111:993 -tls1_2 2>&1 | grep "Cipher is"
+```
+
+---
+
+### 10.9 Greylisting Flow
+
+```
+First attempt (new tuple: IP + MAIL FROM + RCPT TO):
+  Axigen → 451 Temporary rejected by greylisting
+  Postfix → receives 4xx → DEFERRED queue → retry in 5 min
+
+Second attempt (same tuple, 5+ min later):
+  Axigen → tuple whitelisted → 250 Recipient accepted
+  Delivery proceeds
+
+Why it works:
+  Legitimate MTA (Postfix, Exchange) → always retries 4xx
+  Spam software → usually does not retry
+  Result: spam blocked; legitimate mail delayed ~5 min on first contact only
+```
+
+---
+
+### 10.10 SPF / DKIM / DMARC Validation Chain
+
+```
+SPF:
+  Connecting IP: 10.10.10.110
+  MAIL FROM domain: consultancy.accesswt.com
+  DNS TXT lookup: v=spf1 mx ip4:10.10.10.110 ~all
+  Is 10.10.10.110 in record? YES → PASS
+
+DKIM (production only):
+  Extract DKIM-Signature header from message
+  DNS lookup: mail._domainkey.consultancy.accesswt.com → public key
+  Verify b= signature against headers+body using public key
+  Match → PASS
+
+DMARC:
+  From: header domain = consultancy.accesswt.com
+  DNS lookup: _dmarc.consultancy.accesswt.com
+  Policy: p=quarantine
+  SPF domain aligned with From domain? YES
+  DKIM domain aligned with From domain? YES
+  At least one aligned and passes → DMARC PASS
+  Policy action: deliver normally
+```
+
+---
+
+### 10.11 Lab vs Production Comparison
+
+| Item | Lab | Production |
+|---|---|---|
+| User URL | `https://192.168.1.3:8443` | `https://mail.consultancy.accesswt.com` |
+| DNS | Internal BIND only | Public (Cloudflare/Route53) |
+| Certificate | Self-signed (browser warns) | Let's Encrypt (trusted) |
+| PTR record | Not needed | Required by Gmail/Outlook |
+| DKIM | Optional | Required for external delivery |
+| SPF/DMARC | Internal DNS | Public DNS |
+| RBL checks | Not applicable | Active (Spamhaus, SpamCop) |
+| FCrDNS | Not needed | Required |
+| Firewall | ufw + iptables DNAT | Hardware/cloud firewall |
+| Port 25 access | Internal only | Open to internet |
+| Backup MX | Not configured | Recommended |
+| IP warming | Not needed | Required for new IPs |
+| TTL | 604800 (1 week) | 300–3600 (5 min to 1 hour) |
 
 ## 11. Test Cases — All Tried Scenarios
 
@@ -1624,7 +2198,806 @@ ifdown vmbr1 && ifup vmbr1
 
 ---
 
-## 14. Axigen Mail Operations — Complete Script Reference
+## 14. Troubleshooting
+
+### 14.1 Common Failure Points — Both Environments
+
+The table below lists every point in the mail flow where delivery can fail, the symptom you will see, and how to diagnose and fix it.
+
+#### Failure Point 1 — Browser Cannot Reach Webmail
+
+**Symptom:** `ERR_CONNECTION_REFUSED` or browser times out
+
+```bash
+# On awtserver — is DNAT rule present?
+iptables -t nat -L PREROUTING -n --line-numbers | grep -E "8443|443|9443"
+
+# Is IP forwarding on?
+cat /proc/sys/net/ipv4/ip_forward
+# Must output: 1
+
+# Is VM reachable at all?
+ping -c 3 10.10.10.110   # Zimbra
+ping -c 3 10.10.10.111   # Axigen
+
+# Is the port actually listening on the VM?
+nc -zv 10.10.10.110 8443
+nc -zv 10.10.10.111 443
+
+# Fix — re-apply DNAT rules immediately
+iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 8443 \
+  -j DNAT --to-destination 10.10.10.110:8443
+iptables -t nat -A PREROUTING -i wlo1 -p tcp --dport 443 \
+  -j DNAT --to-destination 10.10.10.111:443
+```
+
+*[INSERT SCREENSHOT: iptables -t nat -L PREROUTING -n showing all DNAT rules for 110 and 111 after fix]*
+
+---
+
+#### Failure Point 2 — TLS Certificate Warning in Browser
+
+**Symptom:** Browser shows "Your connection is not private" or certificate error
+
+```bash
+# Check what certificate is being served
+openssl s_client -connect 10.10.10.111:443 </dev/null 2>/dev/null \
+  | openssl x509 -noout -subject -issuer -dates
+
+# Check if cert is expired
+openssl x509 -in /var/opt/axigen/axigenmail.pem -noout -dates 2>/dev/null
+# Look at notAfter — must be a future date
+
+# Check cert has correct CN
+openssl x509 -in /var/opt/axigen/axigenmail.pem -noout -subject
+# Expected: CN=axigen.accesswt.com
+
+# Fix Axigen — regenerate self-signed cert
+sudo openssl req -x509 -nodes -days 730 -newkey rsa:2048 \
+  -keyout /var/opt/axigen/ssl/axigen.key \
+  -out /var/opt/axigen/ssl/axigen.crt \
+  -subj "/C=NP/ST=Bagmati/L=Kathmandu/O=AccessWT/CN=axigen.accesswt.com"
+sudo bash -c 'cat /var/opt/axigen/ssl/axigen.crt \
+  /var/opt/axigen/ssl/axigen.key > /var/opt/axigen/axigenmail.pem'
+sudo chown axigen:axigen /var/opt/axigen/axigenmail.pem
+sudo chmod 600 /var/opt/axigen/axigenmail.pem
+sudo systemctl restart axigen
+
+# Fix Zimbra — redeploy self-signed cert
+su - zimbra
+zmcertmgr deploycrt self
+zmcontrol restart
+```
+
+---
+
+#### Failure Point 3 — Login Fails (Correct Credentials)
+
+**Symptom:** Username/password correct but login rejected
+
+```bash
+# Zimbra — check LDAP is running (auth depends on LDAP)
+su - zimbra
+ldap status
+zmprov gad   # Should return domain list without errors
+
+# If LDAP is down — restart it first
+ldap start
+sleep 5
+zmcontrol start
+
+# Check account status (may be locked)
+zmprov ga admin@consultancy.accesswt.com | grep zimbraAccountStatus
+# Must show: zimbraAccountStatus: active
+
+# Unlock account
+zmprov ma admin@consultancy.accesswt.com zimbraAccountStatus active
+
+# Reset password
+zmprov sp admin@consultancy.accesswt.com 'NewP@ss2026!'
+
+# Axigen — test login via IMAP
+python3 << 'EOF'
+import imaplib
+try:
+    m = imaplib.IMAP4_SSL("10.10.10.111", 993)
+    m.login("admin@school.accesswt.com", "your_password")
+    print("Login OK")
+    m.logout()
+except Exception as e:
+    print(f"Login failed: {e}")
+EOF
+```
+
+---
+
+#### Failure Point 4 — DNS Resolution Fails
+
+**Symptom:** Postfix logs `Host or domain name not found` or `Name service error`
+
+```bash
+# Test resolution from Zimbra VM
+dig @10.10.10.108 school.accesswt.com MX
+# Expected: ANSWER SECTION with axigen.accesswt.com
+
+# If NXDOMAIN or SERVFAIL:
+# Check BIND is running on ns1
+ssh bsuman@10.10.10.106
+sudo systemctl status bind9
+
+# Check zone loaded
+sudo rndc status | grep zones
+
+# Check zone syntax
+sudo named-checkzone accesswt.com /etc/bind/zones/db.accesswt.com
+# Must show: OK
+
+# Reload zone (dynamic zone safe method)
+sudo rndc freeze accesswt.com
+sudo rndc reload accesswt.com
+sudo rndc thaw accesswt.com
+
+# If journal conflict blocks reload
+sudo systemctl stop bind9
+sudo rm /etc/bind/zones/db.accesswt.com.jnl
+sudo systemctl start bind9
+
+# Re-test
+dig @10.10.10.106 school.accesswt.com MX +short
+# Expected: 10 axigen.accesswt.com.
+```
+
+*[INSERT SCREENSHOT: dig @10.10.10.106 school.accesswt.com MX showing correct ANSWER SECTION after fix]*
+
+---
+
+#### Failure Point 5 — SMTP Connection Refused (Port 25)
+
+**Symptom:** Postfix logs `Connection refused` to 10.10.10.111:25
+
+```bash
+# Test port directly
+nc -zv 10.10.10.111 25
+echo "QUIT" | nc 10.10.10.111 25
+# Expected: 220 axigen.accesswt.com Axigen ESMTP ready
+
+# If connection refused:
+# Check Axigen is running
+sudo systemctl status axigen
+ps aux | grep axigen | grep -v grep
+
+# Check port is listening
+sudo ss -tlnp | grep ":25"
+
+# Check ufw is not blocking
+sudo ufw status | grep 25
+# Fix if blocked:
+sudo ufw allow 25/tcp
+
+# Check SMTP Receiving service in Axigen
+# WebAdmin --> SERVICES --> Services Management --> SMTP Receiving --> Start if stopped
+
+# Restart Axigen if needed
+sudo systemctl restart axigen
+```
+
+---
+
+#### Failure Point 6 — Mail Stuck in Postfix Queue
+
+**Symptom:** `postqueue -p` shows messages in deferred state
+
+```bash
+su - zimbra
+
+# View stuck messages with reasons
+postqueue -p
+
+# Get detailed diagnosis for specific message
+postcat -q QUEUEID | grep -A 5 "Diagnostic\|error\|reject\|refused"
+
+# Common reasons and fixes:
+
+# Reason: "Connection refused" (port 25 closed on Axigen)
+#   Fix: sudo ufw allow 25/tcp  (on Axigen)
+
+# Reason: "Host or domain name not found"
+#   Fix: Fix DNS -- see Failure Point 4
+
+# Reason: "451 Temporary rejected by greylisting"
+#   Normal -- Postfix retries automatically in ~5 min
+#   Force immediate retry: postqueue -f
+
+# Reason: "550 User unknown / No such user"
+#   Fix: Create the recipient account in Axigen WebAdmin
+
+# Reason: "452 Insufficient storage"
+#   Fix: Check disk space on Axigen: df -h /var/opt/axigen
+
+# Force retry all deferred immediately
+postqueue -f
+
+# Watch queue clear in real time
+watch -n2 "postqueue -p | wc -l"
+```
+
+*[INSERT SCREENSHOT: postqueue -p showing deferred message with diagnostic reason, then empty queue after postqueue -f]*
+
+---
+
+#### Failure Point 7 — Greylisting Blocking (Stuck, Not Retrying)
+
+**Symptom:** Same message gets 451 repeatedly, never accepted
+
+```bash
+# Normal behavior: Postfix retries after ~5 min and succeeds
+# Abnormal: retries continue getting 451 indefinitely
+
+# Check retry schedule on Zimbra
+postconf minimal_backoff_time   # default 300 sec
+postconf maximal_backoff_time   # default 4000 sec
+
+# Check greylisting whitelist has not expired on Axigen
+# WebAdmin --> Security & Filtering --> Additional AntiSpam Methods --> Greylisting
+# View: whitelisted tuples
+
+# Temporarily disable greylisting for testing
+# WebAdmin --> Additional AntiSpam Methods --> Greylisting --> Disable
+
+# Force immediate retry
+su - zimbra
+postqueue -f
+```
+
+---
+
+#### Failure Point 8 — Mail Delivered to Spam Folder
+
+**Symptom:** Mail arrives but goes to Spam/Junk, not Inbox
+
+```bash
+# Check SPF record exists and is correct
+dig @10.10.10.106 consultancy.accesswt.com TXT +short | grep spf
+# Expected: v=spf1 mx ip4:10.10.10.110 ~all
+
+# Check DMARC record exists
+dig @10.10.10.106 _dmarc.consultancy.accesswt.com TXT +short
+# Expected: v=DMARC1; p=quarantine
+
+# Check antispam score (Zimbra)
+sudo grep "SA score\|spam score" /var/log/zimbra.log | tail -10
+
+# Check if Axigen antispam is over-aggressive
+# WebAdmin --> Security & Filtering --> AntiVirus & AntiSpam
+# Review: spam threshold score, whitelist the sending domain
+
+# Check message headers for Authentication-Results
+# In webmail: open message --> View Source / Show Original
+# Look for: spf=pass, dkim=pass, dmarc=pass
+```
+
+---
+
+#### Failure Point 9 — Mail Body Empty in Webmail
+
+**Symptom:** Email arrives, subject visible, but body is blank
+
+```bash
+# This is an RFC822 formatting issue
+# The message MUST have a blank line between headers and body
+
+# WRONG (no blank line between header and body):
+echo "Subject: Test
+From: sender@example.com
+To: recipient@example.com
+This is the body"
+
+# CORRECT (blank line separates headers from body):
+echo "Subject: Test
+From: sender@example.com
+To: recipient@example.com
+
+This is the body"
+
+# Fix for nc/telnet sending:
+# After typing DATA and seeing 354 response,
+# type headers, then press Enter TWICE before body text
+
+# Fix for Python script:
+# MIMEText automatically handles the blank line separator
+# Use: msg.attach(MIMEText("body text", "plain"))
+# Never build raw RFC822 manually unless you know exactly what you are doing
+```
+
+---
+
+#### Failure Point 10 — STARTTLS Fails (TLS Handshake Error)
+
+**Symptom:** Postfix logs `TLS handshake failed` or `no shared cipher`
+
+```bash
+# Test STARTTLS manually
+openssl s_client -connect 10.10.10.111:25 -starttls smtp 2>&1 \
+  | grep -E "error|alert|Protocol|Cipher|subject"
+
+# Check if cert file is valid
+sudo openssl x509 -in /var/opt/axigen/axigenmail.pem -noout -text 2>&1 \
+  | grep -E "Subject|Issuer|Not Before|Not After|Public Key"
+
+# Check cert contains both cert and key
+sudo grep -c "BEGIN CERTIFICATE" /var/opt/axigen/axigenmail.pem  # must be 1
+sudo grep -c "BEGIN PRIVATE KEY" /var/opt/axigen/axigenmail.pem  # must be 1
+
+# If either count is 0 -- cert/key not combined correctly
+sudo bash -c 'cat /var/opt/axigen/ssl/axigen.crt \
+  /var/opt/axigen/ssl/axigen.key > /var/opt/axigen/axigenmail.pem'
+sudo chown axigen:axigen /var/opt/axigen/axigenmail.pem
+sudo chmod 600 /var/opt/axigen/axigenmail.pem
+sudo systemctl restart axigen
+
+# Verify fix
+openssl s_client -connect 10.10.10.111:25 -starttls smtp 2>/dev/null \
+  | openssl x509 -noout -subject -dates
+```
+
+---
+
+### 14.2 Zimbra-Specific Troubleshooting
+
+#### Check All Services
+
+```bash
+su - zimbra
+
+# Full status
+zmcontrol status
+# Every service should show: Running
+
+# Quick restart of one failed service
+zmcontrol restart mailbox
+zmcontrol restart mta
+zmcontrol restart ldap
+zmcontrol restart proxy
+zmcontrol restart antispam
+zmcontrol restart antivirus
+
+# Full stop and start (use only when multiple services down)
+zmcontrol stop
+sleep 10
+zmcontrol start
+zmcontrol status
+```
+
+#### Postfix Troubleshooting
+
+```bash
+su - zimbra
+
+# View mail queue
+postqueue -p
+
+# Read a specific queued message
+postcat -q QUEUEID
+
+# Check Postfix routing config
+postconf mydestination
+postconf relay_domains
+postconf mynetworks
+postconf smtpd_relay_restrictions
+
+# Test local send
+echo "Subject: Test
+
+Body line" | /opt/zimbra/common/sbin/sendmail \
+  -f info@consultancy.accesswt.com \
+  admin@microfinance.accesswt.com
+
+# Watch Postfix log
+sudo tail -f /var/log/zimbra.log | grep postfix
+
+# Flush deferred queue
+postqueue -f
+
+# Delete specific stuck message
+postsuper -d QUEUEID
+
+# Check Postfix config for errors
+postfix check 2>&1
+```
+
+#### Mailbox / Jetty Troubleshooting
+
+```bash
+su - zimbra
+
+# Check Jetty is accepting connections
+nc -zv localhost 7025   # LMTP (internal delivery)
+nc -zv localhost 8080   # HTTP (internal)
+
+# Search mailbox from CLI
+zmmailbox -z -m user@domain.com search "in:inbox"
+zmmailbox -z -m user@domain.com search "in:inbox subject:Confidential"
+zmmailbox -z -m user@domain.com search "in:sent"
+zmmailbox -z -m user@domain.com search "in:trash"
+
+# Get mailbox statistics
+zmmailbox -z -m user@domain.com getMailboxStats
+
+# Check errors in mailbox log
+sudo grep -i "ERROR\|FATAL\|Exception" /opt/zimbra/log/mailbox.log \
+  | grep "$(date +%Y-%m-%d)" | tail -20
+```
+
+#### Account Management
+
+```bash
+su - zimbra
+
+# List all accounts
+zmprov -l gaa
+
+# List accounts per domain
+zmprov -l gaa consultancy.accesswt.com
+
+# Check account details
+zmprov ga admin@consultancy.accesswt.com \
+  | grep -E "mail:|zimbraAccountStatus|zimbraMailQuota"
+
+# Account status values:
+#   active   = normal
+#   locked   = locked out (too many failed logins)
+#   closed   = disabled
+#   maintenance = maintenance mode
+
+# Unlock a locked account
+zmprov ma user@domain.com zimbraAccountStatus active
+
+# Reset password
+zmprov sp user@domain.com 'NewP@ss2026!'
+
+# Set mailbox quota (bytes, 0 = unlimited)
+zmprov ma user@domain.com zimbraMailQuota 1073741824   # 1 GB
+```
+
+#### Certificate Management
+
+```bash
+su - zimbra
+
+# View current deployed cert
+zmcertmgr viewdeployedcrt mailboxd
+
+# Check expiry
+echo | openssl s_client -connect localhost:8443 2>/dev/null \
+  | openssl x509 -noout -dates
+
+# Redeploy self-signed (lab)
+zmcertmgr deploycrt self
+zmcontrol restart
+
+# Deploy commercial/Let's Encrypt cert (production)
+# First install cert files, then:
+zmcertmgr verifycrt comm /path/cert.pem /path/key.pem /path/chain.pem
+zmcertmgr deploycrt comm /path/cert.pem /path/key.pem /path/chain.pem
+zmcontrol restart
+```
+
+#### Zimbra Log Files
+
+```bash
+# Main log — MTA, antispam, delivery (most useful)
+sudo tail -f /var/log/zimbra.log
+
+# Mailbox/Jetty — webmail, SOAP, account operations
+sudo tail -f /opt/zimbra/log/mailbox.log
+
+# nginx proxy access
+sudo tail -f /opt/zimbra/log/nginx.access.log
+
+# nginx proxy errors
+sudo tail -f /opt/zimbra/log/nginx.error.log
+
+# Admin console audit trail
+sudo tail -f /opt/zimbra/log/audit.log
+
+# Search for errors from today
+sudo grep -i "ERROR\|FATAL" /opt/zimbra/log/mailbox.log \
+  | grep "$(date +%Y-%m-%d)" | tail -30
+
+sudo grep "$(date +%b %e)" /var/log/zimbra.log \
+  | grep -i "error\|fatal\|reject" | tail -30
+```
+
+---
+
+### 14.3 Axigen-Specific Troubleshooting
+
+#### Service and Process Checks
+
+```bash
+# Check service status
+sudo systemctl status axigen
+
+# Check Axigen process is running
+ps aux | grep axigen | grep -v grep
+# Expected: axigen process + axigen-tnef process
+
+# Check all ports Axigen should be listening on
+sudo ss -tlnp | grep axigen
+# Expected ports: 25, 80, 143, 443, 465, 993, 9000, 9443, 7000, 8888
+
+# Restart Axigen
+sudo systemctl stop axigen
+sleep 3
+sudo systemctl start axigen
+sudo systemctl status axigen
+
+# Check startup errors in system journal
+sudo journalctl -u axigen --since "10 minutes ago" | tail -30
+```
+
+#### SMTP Tests
+
+```bash
+# Test SMTP banner
+echo "QUIT" | nc 10.10.10.111 25
+# Expected: 220 axigen.accesswt.com Axigen ESMTP ready
+
+# Test full SMTP conversation with swaks
+swaks --to admin@school.accesswt.com \
+      --from test@accesswt.com \
+      --server 10.10.10.111 \
+      --port 25 \
+      --header "Subject: Axigen SMTP Test" \
+      --body "This is an Axigen SMTP test message." \
+      --verbose
+
+# Test STARTTLS specifically
+swaks --to admin@school.accesswt.com \
+      --from test@accesswt.com \
+      --server 10.10.10.111 \
+      --port 25 \
+      --tls \
+      --verbose
+
+# Watch SMTP log during test
+sudo tail -f /var/log/axigen/smtp-in.log
+```
+
+#### IMAP Tests
+
+```bash
+# Test IMAP SSL connection
+openssl s_client -connect 10.10.10.111:993 </dev/null 2>/dev/null \
+  | openssl x509 -noout -subject -dates
+
+# Full IMAP test via Python
+python3 << 'EOF'
+import imaplib
+
+IMAP_SERVER = "10.10.10.111"
+IMAP_PORT   = 993
+ACCOUNT     = "admin@school.accesswt.com"
+PASSWORD    = "your_password"
+
+try:
+    mail = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
+    print(f"Connected to {IMAP_SERVER}:{IMAP_PORT}")
+
+    mail.login(ACCOUNT, PASSWORD)
+    print(f"Logged in as {ACCOUNT}")
+
+    status, data = mail.list()
+    print(f"Folders available: {len(data)}")
+    for folder in data:
+        print(f"  {folder.decode()}")
+
+    mail.select("INBOX", readonly=True)
+    status, data = mail.search(None, "ALL")
+    msg_ids = data[0].split()
+    print(f"INBOX messages: {len(msg_ids)}")
+
+    mail.logout()
+    print("Test PASSED")
+
+except Exception as e:
+    print(f"Test FAILED: {e}")
+EOF
+```
+
+#### Account and Domain Checks
+
+```bash
+# Verify domain directory exists
+sudo ls /var/opt/axigen/domains/
+# Expected: accesswt.com, school.accesswt.com, fitness.accesswt.com
+
+# Verify account directory exists
+sudo ls /var/opt/axigen/domains/school.accesswt.com/accounts/
+# Expected: admin, info, principal, postmaster
+
+# Verify INBOX directory exists
+sudo ls /var/opt/axigen/domains/school.accesswt.com/accounts/admin/INBOX/
+# Expected: .eml files for delivered messages
+
+# Count messages per user
+for USER in admin info principal; do
+    COUNT=$(sudo ls /var/opt/axigen/domains/school.accesswt.com/accounts/${USER}/INBOX/ 2>/dev/null | wc -l)
+    echo "${USER}@school.accesswt.com: ${COUNT} messages in INBOX"
+done
+
+# Check disk usage per domain
+sudo du -sh /var/opt/axigen/domains/*/
+```
+
+#### Delivery Verification
+
+```bash
+# Send a test message and verify delivery
+swaks --to admin@school.accesswt.com \
+      --from test@accesswt.com \
+      --server 10.10.10.111 \
+      --header "Subject: Delivery Test $(date)" \
+      --body "Delivery test."
+
+# Wait 5 seconds then check
+sleep 5
+
+# Check via filesystem
+sudo find /var/opt/axigen/domains/school.accesswt.com/accounts/admin/INBOX \
+  -name "*.eml" -newer /tmp -ls 2>/dev/null
+
+# Check via IMAP
+python3 << 'EOF'
+import imaplib
+m = imaplib.IMAP4_SSL("10.10.10.111", 993)
+m.login("admin@school.accesswt.com", "your_password")
+m.select("INBOX", readonly=True)
+s, d = m.search(None, 'SUBJECT "Delivery Test"')
+print(f"Delivery test messages found: {len(d[0].split())}")
+m.logout()
+EOF
+```
+
+#### Axigen Log Files
+
+```bash
+# Discover all log files
+sudo find /var/log/axigen -type f -name "*.log" 2>/dev/null
+
+# SMTP incoming — most useful for delivery issues
+sudo tail -f /var/log/axigen/smtp-in.log
+
+# SMTP outgoing — for sent mail issues
+sudo tail -f /var/log/axigen/smtp-out.log
+
+# Main Axigen application log
+sudo tail -f /var/log/axigen/axigen.log
+
+# Delivery log (local delivery results)
+sudo tail -f /var/log/axigen/delivery.log 2>/dev/null
+
+# Search all logs for errors today
+sudo find /var/log/axigen -name "*.log" 2>/dev/null \
+  | xargs grep -i "error\|fail\|reject" 2>/dev/null \
+  | grep "$(date +%Y)" | tail -30
+```
+
+---
+
+### 14.4 Step-by-Step Diagnostic Runbook
+
+Run these in order when a user reports mail not arriving. Stop at the first failure.
+
+```bash
+echo "=== DIAGNOSTIC RUNBOOK: Mail Not Arriving ==="
+echo "Sender: info@consultancy.accesswt.com (Zimbra)"
+echo "Recipient: admin@school.accesswt.com (Axigen)"
+echo ""
+
+echo "--- STEP 1: Is Zimbra MTA running? ---"
+sudo su - zimbra -c "zmcontrol status" | grep -E "mta|mailbox" | grep -v Running && \
+  echo "PROBLEM: Service down" || echo "OK: Zimbra services running"
+
+echo ""
+echo "--- STEP 2: Did message leave Zimbra queue? ---"
+sudo su - zimbra -c "postqueue -p" | grep -c "^[A-F0-9]" | \
+  xargs -I{} bash -c '[ {} -gt 0 ] && echo "PROBLEM: {} messages stuck in queue" || echo "OK: Queue empty"'
+
+echo ""
+echo "--- STEP 3: Did Postfix connect to Axigen? ---"
+sudo grep "school.accesswt.com\|axigen\|status=" /var/log/zimbra.log \
+  | tail -5
+
+echo ""
+echo "--- STEP 4: Did Axigen receive the SMTP session? ---"
+sudo grep "10.10.10.110\|zimbra" /var/log/axigen/smtp-in.log 2>/dev/null \
+  | tail -5
+
+echo ""
+echo "--- STEP 5: Did Axigen accept and queue the message? ---"
+sudo grep "queued\|250 Mail\|accepted" /var/log/axigen/smtp-in.log 2>/dev/null \
+  | tail -5
+
+echo ""
+echo "--- STEP 6: Is the .eml file in the mailbox? ---"
+sudo find /var/opt/axigen/domains/school.accesswt.com/accounts/admin/INBOX \
+  -name "*.eml" 2>/dev/null | wc -l | xargs -I{} echo "{} message files in INBOX"
+
+echo ""
+echo "--- STEP 7: Does IMAP confirm the message? ---"
+python3 -c "
+import imaplib
+try:
+    m = imaplib.IMAP4_SSL('10.10.10.111', 993)
+    m.login('admin@school.accesswt.com', 'your_password')
+    m.select('INBOX', readonly=True)
+    s, d = m.search(None, 'ALL')
+    print(f'OK: IMAP INBOX contains {len(d[0].split())} messages')
+    m.logout()
+except Exception as e:
+    print(f'PROBLEM: {e}')
+"
+
+echo ""
+echo "--- STEP 8: Is webmail accessible? ---"
+curl -sk https://10.10.10.111:443/webmail 2>/dev/null | grep -c "axigen" | \
+  xargs -I{} bash -c '[ {} -gt 0 ] && echo "OK: Webmail responding" || echo "PROBLEM: Webmail not responding"'
+```
+
+---
+
+### 14.5 Quick Reference Card
+
+| Symptom | First Check | Command | Fix |
+|---|---|---|---|
+| Browser can't connect | VM running? | `ping 10.10.10.110` | Start VM |
+| DNAT not working | Rule present? | `iptables -t nat -L PREROUTING -n` | Re-apply DNAT rule |
+| Login fails | LDAP up? | `su - zimbra && ldap status` | `ldap start` |
+| Account locked | Status check | `zmprov ga user@domain` | `zmprov ma user zimbraAccountStatus active` |
+| Mail stuck in queue | Queue check | `postqueue -p` | `postqueue -f` or fix DNS |
+| 451 greylisting | Normal first time | `postqueue -p` | Wait 5 min or `postqueue -f` |
+| 550 user unknown | Account exists? | Check Axigen WebAdmin | Create account |
+| Port 25 refused | Port listening? | `nc -zv 10.10.10.111 25` | `sudo ufw allow 25/tcp` |
+| SMTP banner missing | Service up? | `systemctl status axigen` | `systemctl restart axigen` |
+| IMAPS fails | Port listening? | `ss -tlnp \| grep 993` | Start IMAP service |
+| Cert warning | Cert valid? | `openssl x509 -in cert -noout -dates` | Renew or regenerate cert |
+| STARTTLS error | Cert+key combined? | `grep -c CERTIFICATE axigenmail.pem` | Recombine cert+key |
+| Mail in spam | SPF correct? | `dig TXT consultancy.accesswt.com` | Fix SPF record |
+| Body empty | Blank line? | Check RFC822 format | Add blank line after headers |
+| DNS not resolving | BIND running? | `systemctl status bind9` | Restart BIND |
+| Zone not reloading | Journal conflict? | `rndc freeze/reload/thaw` | Delete .jnl file |
+| Mail not in webmail | File exists? | `find /var/opt/axigen/...INBOX -name *.eml` | Restart Axigen |
+| Disk full | Disk usage | `df -h /var/opt/axigen` | Clean old mail/logs |
+
+---
+
+## Lab vs Production Comparison Summary
+
+| Item | Lab | Production |
+|---|---|---|
+| User URL | `https://192.168.1.3:8443` | `https://mail.consultancy.accesswt.com` |
+| DNS | Internal BIND only | Public DNS (Cloudflare/Route53) |
+| Certificate | Self-signed (browser warns) | Let's Encrypt (trusted) |
+| PTR record | Not needed | Required by Gmail/Outlook |
+| DKIM | Optional/internal | Required for delivery to major providers |
+| SPF | Internal DNS | Public DNS |
+| DMARC | Internal DNS | Public DNS |
+| RBL checks | Not applicable | Active (Spamhaus, SpamCop) |
+| FCrDNS | Not needed | Required |
+| Firewall | ufw + iptables DNAT | Hardware/cloud firewall |
+| Port 25 access | Internal only | Open to internet |
+| Backup MX | Not configured | Recommended |
+| IP warming | Not needed | Required for new IPs |
+| Monitoring | Manual CLI | Automated (Zabbix, Grafana, Nagios) |
+| Blacklist check | Not needed | Daily via mxtoolbox.com |
+| TTL | 604800 (1 week) | 300-3600 (5 min to 1 hour) |
+
+---
+*Mail Flow Complete Reference — Version 1.0*
+*July 2026 | accesswt.com Lab Environment*
+*Zimbra 10.1.16 (Rocky Linux 9.8) + Axigen 10.6.35 (Ubuntu 24.04)*
+## 15. Axigen Mail Operations — Complete Script Reference
 
 All scripts reside on the Axigen VM at `/tmp/`. They use Python3 IMAP/SMTP — no third-party libraries required.
 
@@ -2496,7 +3869,7 @@ python3 /tmp/axigen_test_delete.py
 
 ---
 
-## 15. Bulk Operations — Full Scenario Walkthrough
+## 16. Bulk Operations — Full Scenario Walkthrough
 
 ### 15.1 Scenario: Accidental Confidential Mass Mail — Complete Resolution
 
@@ -2578,95 +3951,6 @@ python3 /tmp/axigen_check_specific_mail.py
 
 *[INSERT SCREENSHOT: Final verification on Zimbra showing num:0]*
 *[INSERT SCREENSHOT: Final verification on Axigen showing NOT FOUND]*
-
----
-
-## 16. Troubleshooting Reference
-
-### 16.1 Common Issues and Fixes
-
-| Issue | Symptom | Fix |
-|---|---|---|
-| Zimbra install interrupted | SSH drops during `Starting servers...` | Use `screen -S zimbra`; reconnect with `screen -r zimbra` |
-| Zimbra CPU exhaustion | Install freezes, load >8 | Add swap (`fallocate -l 4G /swapfile`), bump to 4 vCPU |
-| `rndc reload` fails on dynamic zone | `'reload' failed: dynamic zone` | Use `rndc freeze` → `reload` → `thaw` or delete `.jnl` file |
-| Axigen SMTP 421 timeout | Connection drops before EHLO | Type commands fast; use `nc` heredoc or swaks instead |
-| Mail body missing in webmail | Email shows subject only | Missing blank line between RFC822 headers and body text |
-| `mail` command fails | `Cannot open mailer` | Use `swaks` or Python smtplib — no local MTA on Axigen |
-| Axigen WebAdmin not reachable from LAN | `curl: (7) Failed to connect` | DNAT rules not applied — run `iptables -t nat -A PREROUTING...` manually |
-| `sudo cd` fails | `sudo: cd: command not found` | `cd` is a shell built-in — use `sudo -i` then `cd`, or `sudo ls /path` |
-| Zimbra `zmprov gaa` fails | `getAllAccounts can only be used with -l` | Use `zmprov -l gaa` (LDAP mode) |
-| Axigen greylisting rejection | `451 Temporary rejected` | Normal behavior — retry once; greylisting passes on second attempt |
-
-### 16.2 Zimbra Service Recovery
-
-```bash
-su - zimbra
-
-# Full restart
-zmcontrol stop
-zmcontrol start
-zmcontrol status
-
-# Restart individual service
-zmcontrol restart mailbox
-zmcontrol restart mta
-zmcontrol restart proxy
-
-# Check for stuck mail queue
-postqueue -p       # list queue
-postqueue -f       # force flush
-postsuper -d ALL deferred   # delete all deferred (use carefully)
-
-# Check logs for errors
-sudo grep -i "error\|fatal\|panic" /var/log/zimbra.log | tail -20
-```
-
-### 16.3 Axigen Service Recovery
-
-```bash
-# Restart Axigen
-sudo systemctl stop axigen
-sudo systemctl start axigen
-sudo systemctl status axigen
-
-# Check if process is actually running
-ps aux | grep axigen | grep -v grep
-
-# If ports not listening after restart
-sudo ss -tlnp | grep axigen
-
-# Check config integrity
-sudo ls -la /var/opt/axigen/run/
-
-# Full log check
-sudo find /var/log/axigen -name "*.log" -exec tail -5 {} \; 2>/dev/null
-```
-
-### 16.4 DNS Troubleshooting
-
-```bash
-# Check if BIND is running
-sudo systemctl status bind9
-
-# Test specific resolution
-dig @10.10.10.106 school.accesswt.com MX +short
-dig @10.10.10.106 school.accesswt.com A +short
-
-# Check zone loaded correctly
-sudo rndc status | grep -i zone
-sudo named-checkzone accesswt.com /etc/bind/zones/db.accesswt.com
-
-# Force zone reload (dynamic zone safe method)
-sudo rndc freeze accesswt.com && sudo rndc reload accesswt.com && sudo rndc thaw accesswt.com
-
-# Check journal conflict
-sudo ls -la /etc/bind/zones/*.jnl
-# If stale journal causing issues:
-sudo systemctl stop bind9
-sudo rm /etc/bind/zones/db.accesswt.com.jnl
-sudo systemctl start bind9
-```
 
 ---
 
@@ -2765,4 +4049,4 @@ Total: 7+ user accounts
 *Document generated: July 01, 2026*
 *Environment: accesswt.com internal lab*
 *Proxmox PVE 9.2.2 | Zimbra 10.1.16 GA (Rocky Linux 9.8) | Axigen 10.6.35 (Ubuntu 24.04)*
-*Total pages: ~80 equivalent | Total sections: 18*
+*Total pages: ~100 equivalent | Total sections: 18*
