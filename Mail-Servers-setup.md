@@ -7,7 +7,7 @@
 ## Table of Contents
 
 1. [Infrastructure Overview](#1-infrastructure-overview)
-2. [Minimum Required Resources](#2-minimum-required-resources)
+2. [Available Resources](#2-available-resources)
 3. [Network & NAT Configuration (Proxmox Host)](#3-network--nat-configuration-proxmox-host)
 4. [DNS Server Setup (ns1 / ns2)](#4-dns-server-setup-ns1--ns2)
 5. [Axigen Mail Server Setup (Ubuntu 24)](#5-axigen-mail-server-setup-ubuntu-24)
@@ -75,9 +75,9 @@ awtserver (Proxmox PVE 9.2.2)
 
 ---
 
-## 2. Minimum Required Resources
+## 2. Available Resources
 
-### awtserver (Proxmox Host)
+### Deployed : awtserver (Proxmox Host)
 | Resource | Minimum | Recommended |
 |---|---|---|
 | CPU | 4 cores | 8 cores |
