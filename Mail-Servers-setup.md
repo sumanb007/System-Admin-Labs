@@ -1872,6 +1872,17 @@ echo "Body" | mail -s "Test" -r test@accesswt.com admin@school.accesswt.com
 
 <img width="600" alt="dockerNetwork" src="https://github.com/sumanb007/System-Admin-Labs/blob/main/img/msg-trf-zimbra2axigen.png">
 
+***verifying using CLI***
+```bash
+~/libexec/zmmsgtrace -s info@consultancy.accesswt.com -r principal@school.accesswt.com /var/log/zimbra.log
+
+# OR
+
+/opt/zimbra/libexec/zmmsgtrace -debug   -s info@consultancy.accesswt.com   -r principal@school.accesswt.com   /var/log/zimbra.log
+```
+
+<img width="800" alt="dockerNetwork" src="https://github.com/sumanb007/System-Admin-Labs/blob/main/img/msg-trf-log3.png">
+
 ***Checking Logs in Zimbra Server***
 
 <img width="1200" alt="dockerNetwork" src="https://github.com/sumanb007/System-Admin-Labs/blob/main/img/msg-trf-log1.png">
@@ -1917,6 +1928,8 @@ What it means:
 - 6B091202F8E4 = Queue ID 2 — a new queue ID assigned after Amavis processed it
 
 > Fix: su - zimbra && /opt/zimbra/libexec/zmdkimkeyutil -a -d consultancy.accesswt.com then add the resulting TXT record to DNS.
+> 
+> Updating or enabling DKIM (DomainKeys Identified Mail) allows your mail server to digitally sign outgoing emails so that receiving mail servers can verify they are authentic and haven't been altered in transit.
 
 ***Line 6 — Amavis forwards message back to Postfix (first pass complete)***
 
@@ -1967,7 +1980,11 @@ Status: queue active — Postfix is about to attempt delivery to 10.10.10.111:25
 ***The problem: the log cuts off here***
 The last line shows queue active — Postfix is about to deliver, but the delivery result line is missing. You need to see one of these:
 
-***Run this to find the final delivery line***
+***Run this to find the final delivery line
+
+```bash
+grep "E1DA7202F8CE" /var/log/zimbra.log
+```
 <img width="1200" alt="dockerNetwork" src="https://github.com/sumanb007/System-Admin-Labs/blob/main/img/msg-trf-log2.png">
 
 | Field | What to look for | Meaning |
@@ -1986,8 +2003,55 @@ Queue ID removed — Postfix is done with this message, nothing deferred.
 And postqueue -p shows Mail queue is empty — nothing stuck.
 
 ```bash
-    postqueue -p
+postqueue -p
 ```
+
+### 11.8 Update DKIM
+
+***Step-1 Generate key***
+```bash
+su - zimbra && /opt/zimbra/libexec/zmdkimkeyutil -a -d consultancy.accesswt.com
+```
+<img width="1200" alt="dockerNetwork" src="https://github.com/sumanb007/System-Admin-Labs/blob/main/img/update-dkim1.png">
+
+***Step-2 Add to zone file on ns1***
+```bash
+sudo rndc freeze accesswt.com
+sudo vim /etc/bind/zones/db.accesswt.com
+```
+
+***Step-3 Add this block (the long key must stay on separate quoted lines exactly as shown):***
+mail._domainkey.consultancy.accesswt.com.  IN TXT "v=DKIM1; k=rsa; p=<paste key here>"
+
+```bash
+; DKIM for consultancy.accesswt.com (Zimbra)
+D4E580C2-7931-11F1-A322-0673842193A9._domainkey.consultancy.accesswt.com.  IN  TXT  ( "v=DKIM1; k=rsa; "
+  "p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAubWRBZue/zwkjBjLesSFP/+f7QzfYGMwom1U3dCP43d9hkE8QF42p+1hk5G4FtN29bQf0pFqFbIXGg6zVgo+0jqiIDauE+iYkLSTzlEYsFnoEybHHlhzaA6Wy8rWVjvX5W07bCwfnEbMNIFrPEnQWxLG+xjS+ZoWHjNkO7MLAd3fMmZJ6o33W1B2E9U8CfA7DayxM86i0zzQ3d"
+  "GRQdGtmXxFpIc3tbUaobLXNtKLs8BR6VW1XMios2XcVsF1Oc4Nd+B2NPZHiwoe/4XUDHii7Ij5rog2mSoeo6MrjSnD/z0bz7WirAum3bpYWsPxgTvVzeQuxGNoTF9auM7lvKQeoQIDAQAB" )
+```
+Also increment the serial number in the SOA:
+
+***Step-4 Validate and reload***
+```bash
+sudo named-checkzone accesswt.com /etc/bind/zones/db.accesswt.com
+# Must show: OK
+
+sudo rndc reload accesswt.com
+sudo rndc thaw accesswt.com
+```
+
+***Step-5 Verify the record resolves***
+```bash
+dig @10.10.10.106 D4E580C2-7931-11F1-A322-0673842193A9._domainkey.consultancy.accesswt.com TXT +short
+```
+<img width="1200" alt="dockerNetwork" src="https://github.com/sumanb007/System-Admin-Labs/blob/main/img/update-dkim2.png">
+
+***Step-6 Send fresh mail and check the log:***
+```bash
+grep info@consultancy.accesswt.com /var/log/zimbra.log
+```
+<img width="1200" alt="dockerNetwork" src="https://github.com/sumanb007/System-Admin-Labs/blob/main/img/update-dkim3.png">
+
 ---
 
 ## 12. Bulk Mail Operations (Push & Delete)
