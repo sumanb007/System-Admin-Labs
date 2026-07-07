@@ -16,14 +16,14 @@
 8. [Axigen Hardening](#8-axigen-hardening)
 9. [Multi-Tenant Client Provisioning](#9-multi-tenant-client-provisioning)
 10. [Mail Flow — Detailed Chain Sequence](#10-mail-flow--detailed-chain-sequence)
-    - [10.1 Lab Environment — Step List](#101-lab-environment-step-list)
-    - [10.2 Production Environment — Step List)](#102-production-environment-step-list)
+    - [10.1 Lab Environment Step List](#101-lab-environment-step-list)
+    - [10.2 Production Environment Step List)](#102-production-environment-step-list)
     - [10.3 Detailed Explanation — Lab Steps](#103-detailed-explanation--lab-steps)
     - [10.4 Detailed Explanation — Production Steps](#104-detailed-explanation--production-steps)
-    - [10.5 DNS Record Types — Complete Reference](#105-dns-record-types-complete-reference)
+    - [10.5 DNS Record Types Complete Reference](#105-dns-record-types-complete-reference)
     - [10.6 Port Reference Table](#106-port-reference-table)
-    - [10.7 Mail Queuing — Complete Detail](#107-mail-queuing-complete-detail)
-    - [10.8 TLS Handshake — Step by Step](#108-tls-handshake-step-by-step)
+    - [10.7 Mail Queuing Complete Detail](#107-mail-queuing-complete-detail)
+    - [10.8 TLS Handshake Step by Step](#108-tls-handshake-step-by-step)
     - [10.9 Greylisting Flow](#109-greylisting-flow)
     - [10.10 SPF / DKIM / DMARC Validation Chain](#1010-spf--dkim--dmarc-validation-chain)
     - [10.11 Lab vs Production Comparison](#1011-lab-vs-production-comparison)
@@ -1003,7 +1003,7 @@ zmprov -l gaa
 
 ---
 
-### 10.1 Lab Environment — Step List
+### 10.1 Lab Environment Step List
 
 Every line below is one discrete, traceable step in chronological order.
 
@@ -1194,7 +1194,7 @@ S-112  Browser displays message to recipient — mail flow complete
 
 ---
 
-### 10.2 Production Environment — Step List
+### 10.2 Production Environment Step List
 
 > Steps changed from lab are marked `[PROD-CHANGE]`. New production-only steps are marked `[PROD-NEW]`.
 
@@ -1537,7 +1537,7 @@ Authentication-Results: axigen.accesswt.com;
 
 ---
 
-### 10.5 DNS Record Types — Complete Reference
+### 10.5 DNS Record Types Complete Reference
 
 | Record | Lab Example | Purpose |
 |---|---|---|
@@ -1588,7 +1588,7 @@ dig @$NS _dmarc.$DOMAIN TXT +short
 
 ---
 
-### 10.7 Mail Queuing — Complete Detail
+### 10.7 Mail Queuing Complete Detail
 
 ```
 Message submitted via sendmail pipe
@@ -1613,7 +1613,7 @@ postsuper -d ALL deferred   # delete all deferred (use carefully)
 
 ---
 
-### 10.8 TLS Handshake — Step by Step
+### 10.8 TLS Handshake Step by Step
 
 ```
 1.  TCP connection established (plain)
