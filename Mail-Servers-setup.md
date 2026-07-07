@@ -16,27 +16,33 @@
 8. [Axigen Hardening](#8-axigen-hardening)
 9. [Multi-Tenant Client Provisioning](#9-multi-tenant-client-provisioning)
 10. [Mail Flow — Detailed Chain Sequence](#10-mail-flow--detailed-chain-sequence)
-    - 10.1 Lab Environment Step List (S-01 to S-112)
-    - 10.2 Production Environment Step List (P-01 to P-72)
-    - 10.3 Detailed Explanation — Lab Steps
-    - 10.4 Detailed Explanation — Production Steps
-    - 10.5 DNS Record Types Reference
-    - 10.6 Port Reference Table
-    - 10.7 Mail Queuing Detail
-    - 10.8 TLS Handshake Step by Step
-    - 10.9 Greylisting Flow
-    - 10.10 SPF / DKIM / DMARC Validation Chain
-    - 10.11 Lab vs Production Comparison
+   - [10.1 Lab Environment Step List (S-01 to S-112)](#101-lab-environment-step-list-s-01-to-s-112)
+   - [10.2 Production Environment Step List (P-01 to P-72)](#102-production-environment-step-list-p-01-to-p-72)
+   - [10.3 Detailed Explanation — Lab Steps](#103-detailed-explanation-lab-steps)
+   - [10.4 Detailed Explanation — Production Steps](#104-detailed-explanation-production-steps)
+   - [10.5 DNS Record Types Reference](#105-dns-record-types-reference)
+   - [10.6 Port Reference Table](#106-port-reference-table)
+   - [10.7 Mail Queuing Detail](#107-mail-queuing-detail)
+   - [10.8 TLS Handshake Step by Step](#108-tls-handshake-step-by-step)
+   - [10.9 Greylisting Flow](#109-greylisting-flow)
+   - [10.10 SPF / DKIM / DMARC Validation Chain](#1010-spf-dkim-dmarc-validation-chain)
+   - [10.11 Lab vs Production Comparison](#1011-lab-vs-production-comparison)
 11. [Test Cases — All Tried Scenarios](#11-test-cases--all-tried-scenarios)
     - [11.1 SMTP Connectivity Tests](#111-smtp-connectivity-tests)
+    - [11.2 Zimbra CLI Send Tests](#112-zimbra-cli-send-tests)
+    - [11.3 Python SMTP Bulk Send Tests](#113-python-smtp-bulk-send-tests)
+    - [11.4 Cross-Server Mail Flow Tests](#114-cross-server-mail-flow-tests)
+    - [11.5 swaks Test](#115-swaks-test)
+    - [11.6 mailutils Test (Failed — No local MTA)](#116-mailutils-test-failed-no-local-mta)
+    - [11.7 Mail Transfer test ( Zimbra ~ Axigen)](#117-mail-transfer-test-zimbra-axigen)
+    - [11.8 Update DKIM](#118-update-dkim)
 13. [Bulk Mail Operations (Push & Delete)](#12-bulk-mail-operations-push--delete)
 14. [Monitoring Commands](#13-monitoring-commands)
 15. [Troubleshooting](#14-troubleshooting)
-    - 14.1 Common Failure Points — Both Environments
-    - 14.2 Zimbra-Specific Troubleshooting
-    - 14.3 Axigen-Specific Troubleshooting
-    - 14.4 Step-by-Step Diagnostic Runbook
-    - 14.5 Quick Reference Card
+    - [14.1 Common Failure Points — Both Environments](#141-common-failure-points-both-environments)
+    - [14.2 Zimbra-Specific Troubleshooting](#142-zimbra-specific-troubleshooting)
+    - [14.4 Step-by-Step Diagnostic Runbook](#144-step-by-step-diagnostic-runbook)
+    - [14.5 Quick Reference Card](#145-quick-reference-card)
 16. [Axigen Mail Operations — Complete Script Reference](#15-axigen-mail-operations--complete-script-reference)
 17. [Bulk Operations — Full Scenario Walkthrough](#16-bulk-operations--full-scenario-walkthrough)
 18. [Security Hardening Summary](#17-security-hardening-summary)
