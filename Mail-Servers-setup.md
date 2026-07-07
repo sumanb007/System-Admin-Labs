@@ -2006,7 +2006,7 @@ And postqueue -p shows Mail queue is empty — nothing stuck.
 postqueue -p
 ```
 
-### 11.8 Update DKIM
+***11.7.2 Update DKIM***
 
 ***Step-1 Generate key***
 ```bash
@@ -2052,7 +2052,95 @@ grep info@consultancy.accesswt.com /var/log/zimbra.log
 ```
 <img width="1200" alt="dockerNetwork" src="https://github.com/sumanb007/System-Admin-Labs/blob/main/img/update-dkim3.png">
 
----
+***11.7.3 Message Receive in Axigen***
+
+```bash
+sudo grep -i "info@consultancy" /var/opt/axigen/log/everything.txt | tail -30
+```
+<img width="1200" alt="dockerNetwork" src="https://github.com/sumanb007/System-Admin-Labs/blob/main/img/msg-rcvd-in-axigen-log1.png">
+
+Axigen `everything.txt` — How to Read It
+
+The log format is:
+
+```text
+TIMESTAMP                     LEVEL  PROCESS  SERVICE:WORKER_ID:    MESSAGE
+
+2026-07-06 13:10:08 +0545     08     axigen  PROCESSING:002C2605:   ...
+
+│                             │      │        │
+│                             │      │        └── Internal mail object (worker) ID
+│                             │      └────────── Axigen subsystem that generated the log
+│                             └───────────────── Log level (`08` = Informational)
+└────────────────────────────── Nepal time (UTC+5:45)
+```
+
+| Subsystem | What it logs |
+|------------|--------------|
+| **SMTP-IN** | Inbound SMTP connections from other mail servers. |
+| **SMTP-OUT** | Outbound SMTP delivery to remote mail servers. |
+| **PROCESSING** | Queue processing, message filtering, and mailbox delivery. |
+| **WEBMAIL** | HTTP/HTTPS requests generated from Axigen WebMail sessions. |
+| **MAILBOXAPI** | Internal mailbox API operations (folder listing, conversation retrieval, message access, etc.). |
+| **JOBLOG** | Background jobs such as search indexing, sorting, maintenance, and scheduled tasks. |
+
+***Line 1 SPF check (first thing Axigen does)***
+SPF (Sender Policy Framework) is a DNS-based authentication method that tells receiving mail servers which IP addresses are allowed to send email for a domain.
+
+What it means: 
+
+Axigen ran an SPF lookup on consultancy.accesswt.com, found v=spf1 mx ip4:10.10.10.110 ~all, confirmed the connecting IP 10.10.10.110 is listed — SPF PASS. This is your SPF record working exactly as designed.
+
+This tells us:
+    MAIL FROM = info@consultancy.accesswt.com
+        This is the envelope sender used during the SMTP conversation.
+    EHLO domain = zimbra.accesswt.com
+        This is the hostname your Zimbra server introduced itself as.
+    Connecting IP = 10.10.10.110
+        This is the IP address that connected to the Axigen server.
+    Result = Pass
+The connecting IP is authorized to send mail for consultancy.accesswt.com
+
+***Line 2-4 Blacklist and whitelist filter checks***
+
+What it means: 
+
+Axigen ran its built-in wmFilter script against the sender:
+Not on blacklist → continue processing (good)
+Not on whitelist → apply normal filtering rules (neutral — whitelist would bypass spam checks)
+Keep requested = the filter script decided to keep/deliver the message, not reject it
+
+***Line 5 New Mail Received***
+
+SMTP-IN:0000001B: New mail
+  <506982069.7.1783322704734.JavaMail.zimbra@consultancy.accesswt.com>
+  received from zimbra.accesswt.com (10.10.10.110)
+  with envelope from <info@consultancy.accesswt.com>
+  recipients=1 (principal@school.accesswt.com)
+  size=2210
+  enqueued with id 2C2605
+
+This is Axigen's "I received the mail" confirmation. Notice the Message-ID matches exactly what Zimbra sent — same 506982069.7.1783322704734 — proving this is the same message tracked across both logs.
+
+The state machine progression:
+
+```text
+RECEIVED → PROCESSING → PROCESSING → PROCESSED-LOCAL → INBOX(id=6) → SENT
+```
+`state to SENT` here means Axigen finished its job — the message was handed off to the mailbox store. "SENT" in Axigen's processing context means "dispatched to destination" not "sent outbound".
+
+<img width="1200" alt="dockerNetwork" src="https://github.com/sumanb007/System-Admin-Labs/blob/main/img/msg-rcvd-in-axigen-log1.png">
+
+```text
+13:07:16  Account 'principal@school.accesswt.com' has logged in
+13:07:17  GET /api/v1/conversations → code=200
+13:10:08  GET /api/v1/conversations → code=200 time=7   ← inbox refresh when mail arrived
+13:10:11  GET /api/v1/conversations → code=200 time=26  ← webmail auto-refreshed, saw new mail
+13:10:11  GET /api/v1/conversations/Nw → time=2         ← opened the conversation
+13:10:11  GET /api/v1/mails/NzFfMTY3NzcyNDdfNg/parts   ← fetched message parts
+13:10:11  GET /api/v1/mails/.../parts/details → code=200 ← rendered message body
+13:10:16  PATCH /api/v1/conversations/Nw/ → code=200    ← user marked it as read
+```
 
 ## 12. Bulk Mail Operations (Push & Delete)
 
