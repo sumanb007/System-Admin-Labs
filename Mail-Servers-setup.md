@@ -1877,7 +1877,8 @@ echo "Body" | mail -s "Test" -r test@accesswt.com admin@school.accesswt.com
 ### 11.7 Mail Transfer test ( Zimbra ~ Axigen)
 
 ***Test 11.7.1 - message transfer Zimbra to Axigen***
-***Message send from info@consultancy.accesswt.com (Zimbra) to principal@school.accesswt.com (principal)***
+*** Message send from info@consultancy.accesswt.com (Zimbra) to principal@school.accesswt.com (principal)***
+
 <img width="600" alt="dockerNetwork" src="https://github.com/sumanb007/System-Admin-Labs/blob/main/img/msg-trf-zimbra2axigen.png">
 
 ***verifying using CLI***
