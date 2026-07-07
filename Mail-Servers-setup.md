@@ -2150,6 +2150,34 @@ RECEIVED → PROCESSING → PROCESSING → PROCESSED-LOCAL → INBOX(id=6) → S
 13:10:16  PATCH /api/v1/conversations/Nw/ → code=200    ← user marked it as read
 ```
 
+### Quick Reference
+
+```text
+# Zimbra — did mail leave?
+grep "status=sent\|status=deferred\|status=bounced" /var/log/zimbra.log | tail -20
+
+# Zimbra — trace specific message by Queue ID
+grep "E1DA7202F8CE" /var/log/zimbra.log
+
+# Zimbra — trace by Message-ID (most reliable across queue hops)
+grep "506982069" /var/log/zimbra.log
+
+# Axigen — did mail arrive via SMTP?
+sudo grep "SMTP-IN.*New mail" /var/opt/axigen/log/everything.txt | tail -10
+
+# Axigen — was mail delivered to mailbox?
+sudo grep "Mail delivered to mailbox" /var/opt/axigen/log/everything.txt | tail -10
+
+# Axigen — SPF results
+sudo grep "SPF result" /var/opt/axigen/log/everything.txt | tail -10
+
+# Axigen — user login events
+sudo grep "has logged in" /var/opt/axigen/log/everything.txt | tail -10
+
+# Axigen — watch live
+sudo tail -f /var/opt/axigen/log/everything.txt | grep -E "SMTP-IN|PROCESSING|delivered"
+```
+
 ### 11.8 Update DKIM
 
 Generate DKIM key
