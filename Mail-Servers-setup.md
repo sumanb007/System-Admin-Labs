@@ -2150,6 +2150,52 @@ RECEIVED → PROCESSING → PROCESSING → PROCESSED-LOCAL → INBOX(id=6) → S
 13:10:16  PATCH /api/v1/conversations/Nw/ → code=200    ← user marked it as read
 ```
 
+### 11.8 Update DKIM
+
+Generate DKIM key
+```bash
+/opt/zimbra/libexec/zmdkimkeyutil -a -d consultancy.accesswt.com
+```
+The output will look like this — copy the TXT record value:
+
+```text
+DNS TXT record to publish:
+
+mail._domainkey.consultancy.accesswt.com. 3600 TXT
+  "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA..."
+```
+
+<img width="1200" alt="dockerNetwork" src="https://github.com/sumanb007/System-Admin-Labs/blob/main/img/update-dkim1.png">
+
+Add this line (increment serial too):
+
+```text
+mail._domainkey.consultancy.accesswt.com.  IN TXT "v=DKIM1; k=rsa; p=<paste key here>"
+```
+
+<img width="1200" alt="dockerNetwork" src="https://github.com/sumanb007/System-Admin-Labs/blob/main/img/update-dkim2.png">
+
+Then on ns1 add it to the zone:
+```bash
+# On ns1
+sudo rndc freeze accesswt.com
+sudo vim /etc/bind/zones/db.accesswt.com
+```
+
+then apply:
+```bash
+sudo named-checkzone accesswt.com /etc/bind/zones/db.accesswt.com
+sudo rndc reload accesswt.com
+sudo rndc thaw accesswt.com
+
+# Verify it resolves
+dig @10.10.10.106 mail._domainkey.consultancy.accesswt.com TXT +short
+```
+
+Then send another test mail and grep for the DKIM result:
+
+<img width="1200" alt="dockerNetwork" src="https://github.com/sumanb007/System-Admin-Labs/blob/main/img/update-dkim3.png">
+
 ## 12. Bulk Mail Operations (Push & Delete)
 
 ### 12.1 Zimbra — Bulk Delete Script (Confirmed Working)
