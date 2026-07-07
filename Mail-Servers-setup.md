@@ -28,18 +28,19 @@
     - 10.10 SPF / DKIM / DMARC Validation Chain
     - 10.11 Lab vs Production Comparison
 11. [Test Cases — All Tried Scenarios](#11-test-cases--all-tried-scenarios)
-12. [Bulk Mail Operations (Push & Delete)](#12-bulk-mail-operations-push--delete)
-13. [Monitoring Commands](#13-monitoring-commands)
-14. [Troubleshooting](#14-troubleshooting)
+    - [11.1 SMTP Connectivity Tests](#11-1-smtp-connectivity-tests)
+13. [Bulk Mail Operations (Push & Delete)](#12-bulk-mail-operations-push--delete)
+14. [Monitoring Commands](#13-monitoring-commands)
+15. [Troubleshooting](#14-troubleshooting)
     - 14.1 Common Failure Points — Both Environments
     - 14.2 Zimbra-Specific Troubleshooting
     - 14.3 Axigen-Specific Troubleshooting
     - 14.4 Step-by-Step Diagnostic Runbook
     - 14.5 Quick Reference Card
-15. [Axigen Mail Operations — Complete Script Reference](#15-axigen-mail-operations--complete-script-reference)
-16. [Bulk Operations — Full Scenario Walkthrough](#16-bulk-operations--full-scenario-walkthrough)
-17. [Security Hardening Summary](#17-security-hardening-summary)
-18. [Environment Summary — Final State](#18-environment-summary--final-state)
+16. [Axigen Mail Operations — Complete Script Reference](#15-axigen-mail-operations--complete-script-reference)
+17. [Bulk Operations — Full Scenario Walkthrough](#16-bulk-operations--full-scenario-walkthrough)
+18. [Security Hardening Summary](#17-security-hardening-summary)
+19. [Environment Summary — Final State](#18-environment-summary--final-state)
 
 ---
 
