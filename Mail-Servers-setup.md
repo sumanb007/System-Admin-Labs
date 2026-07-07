@@ -343,7 +343,7 @@ $ORIGIN 10.10.10.in-addr.arpa.
 
 ### 4.6 Applying zone changes (Dynamic Zone — CRITICAL)
 
-Since the zone has `update-policy` (DDNS), you cannot use `rndc reload` directly. Use freeze/thaw:
+Since the zone has `update-policy` (DDNS), we cannot use `rndc reload` directly. Use freeze/thaw:
 
 ```bash
 # Check zone syntax first
@@ -419,7 +419,7 @@ sudo wget https://download.axigen.com/mail-server/axigen_10.6.35-1_amd64.deb
 
 sudo dpkg -i /tmp/axigen_10.6.35-1_amd64.deb
 # Expected output:
-# Thank you for installing AXIGEN Mail Server
+# Thank we for installing AXIGEN Mail Server
 # * Starting AXIGEN Mail Server... [ OK ]
 ```
 
@@ -640,7 +640,7 @@ Change domain name? [Yes] No
 **Setting Admin Password (Store Configuration menu):**
 ```
 Select 6 → zimbra-store → Select 4 → Admin Password
-Password: (set your password — minimum 6 characters)
+Password: (set password — minimum 6 characters)
 Press r → return to main menu
 Press a → apply configuration
 Save config: Yes
@@ -1914,7 +1914,7 @@ What it means:
 What it means:
 
 - Amavis worker [5164] received this message on port 10026
-- ORIGINATING/MYNETS = Amavis recognized this as outbound mail from a trusted local network (MYNETS = 10.10.10.0/24 in your config)
+- ORIGINATING/MYNETS = Amavis recognized this as outbound mail from a trusted local network (MYNETS = 10.10.10.0/24 in config)
 - 2WJBQ0bh4YSV = Amavis's own internal mail ID (different from Postfix Queue ID)
 - This is the first Amavis pass — checks if it should be signed, scanned, relayed
 
@@ -1929,7 +1929,7 @@ What it means:
 
 > Fix: su - zimbra && /opt/zimbra/libexec/zmdkimkeyutil -a -d consultancy.accesswt.com then add the resulting TXT record to DNS.
 > 
-> Updating or enabling DKIM (DomainKeys Identified Mail) allows your mail server to digitally sign outgoing emails so that receiving mail servers can verify they are authentic and haven't been altered in transit.
+> Updating or enabling DKIM (DomainKeys Identified Mail) allows mail server to digitally sign outgoing emails so that receiving mail servers can verify they are authentic and haven't been altered in transit.
 
 ***Line 6 — Amavis forwards message back to Postfix (first pass complete)***
 
@@ -1948,7 +1948,7 @@ What it means:
 - Hits: - = no spam hits (dash means no rules triggered at all — very clean)
 - 1276 ms = this Amavis check took 1.276 seconds
 - queued_as: 6B091202F8E4 = new queue ID after Amavis
-- The Message-ID is the stable identifier you can use to trace across all log lines: 506982069.7.1783322704734.JavaMail.zimbra@consultancy.accesswt.com
+- The Message-ID is the stable identifier we can use to trace across all log lines: 506982069.7.1783322704734.JavaMail.zimbra@consultancy.accesswt.com
 
 ***Lines 8–9 — SECOND Amavis pass (port 10032)***
 
@@ -1978,7 +1978,7 @@ Status: queue active — Postfix is about to attempt delivery to 10.10.10.111:25
 
 
 ***The problem: the log cuts off here***
-The last line shows queue active — Postfix is about to deliver, but the delivery result line is missing. You need to see one of these:
+The last line shows queue active — Postfix is about to deliver, but the delivery result line is missing. we need to see one of these:
 
 ***Run this to find the final delivery line
 
@@ -2388,7 +2388,7 @@ ifdown vmbr1 && ifup vmbr1
 
 ### 14.1 Common Failure Points — Both Environments
 
-The table below lists every point in the mail flow where delivery can fail, the symptom you will see, and how to diagnose and fix it.
+The table below lists every point in the mail flow where delivery can fail, the symptom we will see, and how to diagnose and fix it.
 
 #### Failure Point 1 — Browser Cannot Reach Webmail
 
@@ -2692,7 +2692,7 @@ This is the body"
 # Fix for Python script:
 # MIMEText automatically handles the blank line separator
 # Use: msg.attach(MIMEText("body text", "plain"))
-# Never build raw RFC822 manually unless you know exactly what you are doing
+# Never build raw RFC822 manually unless we know exactly what we are doing
 ```
 
 ---
