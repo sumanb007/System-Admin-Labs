@@ -628,6 +628,9 @@ Install zimbra-ldap:            Y
 Install zimbra-logger:          Y
 Install zimbra-mta:             Y
 Install zimbra-dnscache:        N  (we have our own DNS)
+Install zimbra-imapd:           N
+Install zimbra-drive:           N
+Install zimbra-chat:            N
 Install zimbra-snmp:            Y
 Install zimbra-store:           Y
 Install zimbra-apache:          Y
