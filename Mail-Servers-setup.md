@@ -602,7 +602,7 @@ screen -S zimbra-install
 
 The official Zimbra 8.8.15 builds no longer exist at the original URLs and are not compatible with RHEL9/Rocky9. Use the community FOSS build:
 
-https://maldua.github.io/zimbra-foss/downloads/stable.html?utm_source=chatgpt.com 
+https://maldua.github.io/zimbra-foss/downloads/stable.html
 
 ```bash
 cd /opt
