@@ -587,6 +587,11 @@ sudo swapon /swapfile
 echo '/swapfile swap swap defaults 0 0' | sudo tee -a /etc/fstab
 
 # Install screen (critical — prevents SSH drop killing install)
+
+sudo dnf install epel-release -y
+sudo dnf install tar nano wget bind bind-utils telnet perl firewalld nmap-ncat -y
+sudo systemctl stop postfix
+sudo systemctl disable postfix
 sudo dnf install -y screen net-tools wget curl perl tar
 ```
 
