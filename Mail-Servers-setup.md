@@ -47,6 +47,10 @@
 15. [Axigen Mail Operations — Complete Script Reference](#15-axigen-mail-operations--complete-script-reference)
 16. [Bulk Operations — Full Scenario Walkthrough](#16-bulk-operations--full-scenario-walkthrough)
 17. [Client Domain Setup](#17-client-domain-setup)
+    - [17.1 Zimbra Client Domain Setup](#171-zimbra-client-domain-setup)
+    - [17.2 Axigen Client Domain Setup](#172-axigen-client-domain-setup)
+    - [17.3 DNS Zone All Records for Clients](#173-dns-zone-all-records-for-clients)
+    - [17.4 Checklist for Each Client](#174-checklist-for-each-client)
 18. [Security Hardening Summary](#17-security-hardening-summary)
 19. [Environment Summary — Final State](#18-environment-summary--final-state)
 
@@ -589,6 +593,7 @@ echo '/swapfile swap swap defaults 0 0' | sudo tee -a /etc/fstab
 
 # Install screen (critical — prevents SSH drop killing install)
 
+sudo dnf update -y && dnf upgrade -y
 sudo dnf install epel-release -y
 sudo dnf install tar nano wget bind bind-utils telnet perl firewalld nmap-ncat -y
 sudo systemctl stop postfix
