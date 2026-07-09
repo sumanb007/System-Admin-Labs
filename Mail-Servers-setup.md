@@ -46,8 +46,9 @@
     - [14.5 Quick Reference Card](#145-quick-reference-card)
 15. [Axigen Mail Operations — Complete Script Reference](#15-axigen-mail-operations--complete-script-reference)
 16. [Bulk Operations — Full Scenario Walkthrough](#16-bulk-operations--full-scenario-walkthrough)
-17. [Security Hardening Summary](#17-security-hardening-summary)
-18. [Environment Summary — Final State](#18-environment-summary--final-state)
+17. [Client Domain Setup](#17-client-domain-setup)
+18. [Security Hardening Summary](#17-security-hardening-summary)
+19. [Environment Summary — Final State](#18-environment-summary--final-state)
 
 ---
 
@@ -4317,6 +4318,2548 @@ python3 /tmp/axigen_check_specific_mail.py
 *[INSERT SCREENSHOT: Final verification on Zimbra showing num:0]*
 *[INSERT SCREENSHOT: Final verification on Axigen showing NOT FOUND]*
 
+---
+
+2. [Zimbra — Complete Client Domain Setup](#2-zimbra--complete-client-domain-setup)
+   - 2.1 Create Domain
+   - 2.2 SSL/TLS Certificate
+   - 2.3 DKIM Key
+   - 2.4 SPF Record
+   - 2.5 DMARC Record
+   - 2.6 Create Client Admin Account
+   - 2.7 Delegate Admin Privileges
+   - 2.8 Restrict Admin to Own Domain Only
+   - 2.9 Create End-User Accounts Under Client
+   - 2.10 Set Quotas and Policies
+   - 2.11 Verify Everything
+3. [Axigen — Complete Client Domain Setup](#3-axigen--complete-client-domain-setup)
+   - 3.1 Create Domain
+   - 3.2 SSL/TLS Certificate
+   - 3.3 DKIM Key
+   - 3.4 SPF Record
+   - 3.5 DMARC Record
+   - 3.6 Create Client Admin Account
+   - 3.7 Delegate Admin Privileges
+   - 3.8 Restrict Admin to Own Domain Only
+   - 3.9 Create End-User Accounts Under Client
+   - 3.10 Set Quotas and Policies
+   - 3.11 Verify Everything
+4. [DNS Zone — All Records for All Clients](#4-dns-zone--all-records-for-all-clients)
+5. [Client Admin — What They Can and Cannot Do](#5-client-admin--what-they-can-and-cannot-do)
+6. [Handoff Checklist for Each Client](#6-handoff-checklist-for-each-client)
+7. [Quick Command Reference](#7-quick-command-reference)
+
+---
+
+## 1. Overview
+
+Every new client domain needs these components before it is production-ready:
+
+| Component | Purpose | Where configured |
+|---|---|---|
+| Domain | Mailboxes exist under this name | Zimbra/Axigen |
+| SSL/TLS cert | Encrypts all connections | Mail server |
+| DKIM key | Signs outgoing mail — prevents spoofing | Mail server + DNS |
+| SPF record | Authorizes sending IPs | DNS |
+| DMARC record | Enforces SPF+DKIM policy | DNS |
+| Client admin account | Client manages their own domain | Zimbra/Axigen |
+| Admin privileges | Scoped to client's domain only | Zimbra/Axigen |
+| User accounts | Actual mailboxes | Zimbra/Axigen |
+| Quotas | Prevent one client filling shared disk | Zimbra/Axigen |
+| MX record | Tells internet where mail goes | DNS |
+
+**Example client used throughout:** `clientco.com` hosted on Zimbra at `10.10.10.110`
+(Replace `clientco.com` with the real domain for each client)
+
+---
+
+## 2. Zimbra — Complete Client Domain Setup
+
+### 2.1 Create Domain
+
+```bash
+su - zimbra
+
+# Create the domain
+zmprov createDomain clientco.com \
+  zimbraAuthMech zimbra \
+  zimbraPublicServiceHostname mail.clientco.com \
+  zimbraPublicServiceProtocol https \
+  zimbraPublicServicePort 443
+
+# Verify domain created
+zmprov gd clientco.com | grep -E "zimbraDomain|zimbraPublicService"
+```
+
+---
+
+### 2.2 SSL/TLS Certificate
+
+Zimbra uses one shared SSL certificate for all hosted domains. The certificate is deployed on the Zimbra server itself, not per-domain. If the client has their own certificate (e.g. for `mail.clientco.com`), deploy it as follows.
+
+#### Option A — Self-signed (lab/internal use)
+
+```bash
+su - zimbra
+
+# View currently deployed cert
+zmcertmgr viewdeployedcrt mailboxd
+
+# The existing self-signed cert covers zimbra.accesswt.com
+# Clients connect via the server hostname — cert warning appears
+# For lab use this is acceptable
+```
+
+#### Option B — Deploy client's own commercial cert
+
+```bash
+su - zimbra
+
+# Files needed from client or CA:
+#   /tmp/clientco.crt    (certificate)
+#   /tmp/clientco.key    (private key)
+#   /tmp/clientco.ca     (CA chain file)
+
+# Verify the cert before deploying
+zmcertmgr verifycrt comm \
+  /tmp/clientco.crt \
+  /tmp/clientco.key \
+  /tmp/clientco.ca
+
+# Deploy to Zimbra
+zmcertmgr deploycrt comm \
+  /tmp/clientco.crt \
+  /tmp/clientco.key \
+  /tmp/clientco.ca
+
+# Restart proxy and mailbox services to load new cert
+zmproxyctl restart
+zmmailboxdctl restart
+
+# Verify new cert is live
+openssl s_client -connect 10.10.10.110:8443 </dev/null 2>/dev/null \
+  | openssl x509 -noout -subject -issuer -dates
+```
+
+#### Option C — Let's Encrypt (production, requires public IP + DNS)
+
+```bash
+# On Zimbra server (as root)
+sudo apt install -y certbot   # Ubuntu
+# or
+sudo dnf install -y certbot   # Rocky/RHEL
+
+# Obtain cert (Zimbra must temporarily stop proxy on port 80)
+su - zimbra -c "zmproxyctl stop"
+
+sudo certbot certonly --standalone \
+  -d mail.clientco.com \
+  --agree-tos \
+  --email admin@clientco.com
+
+su - zimbra -c "zmproxyctl start"
+
+# Deploy to Zimbra
+su - zimbra
+zmcertmgr deploycrt comm \
+  /etc/letsencrypt/live/mail.clientco.com/cert.pem \
+  /etc/letsencrypt/live/mail.clientco.com/privkey.pem \
+  /etc/letsencrypt/live/mail.clientco.com/chain.pem
+
+zmproxyctl restart
+zmmailboxdctl restart
+
+# Auto-renewal hook
+sudo tee /etc/letsencrypt/renewal-hooks/deploy/zimbra-reload.sh << 'HOOK'
+#!/bin/bash
+su - zimbra -c "
+  zmcertmgr deploycrt comm \
+    /etc/letsencrypt/live/mail.clientco.com/cert.pem \
+    /etc/letsencrypt/live/mail.clientco.com/privkey.pem \
+    /etc/letsencrypt/live/mail.clientco.com/chain.pem
+  zmproxyctl restart
+  zmmailboxdctl restart
+"
+HOOK
+sudo chmod +x /etc/letsencrypt/renewal-hooks/deploy/zimbra-reload.sh
+
+# Test renewal
+sudo certbot renew --dry-run
+```
+
+---
+
+### 2.3 DKIM Key
+
+Each hosted domain needs its own DKIM key. Keys are stored in Zimbra's LDAP and the public part goes into DNS.
+
+```bash
+su - zimbra
+
+# Generate DKIM key for the client domain
+/opt/zimbra/libexec/zmdkimkeyutil -a -d clientco.com
+
+# Output will look like:
+# DKIM Data added to LDAP for domain clientco.com
+# with selector XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX
+#
+# Public signature to enter into DNS:
+# XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX._domainkey  IN  TXT
+#   ( "v=DKIM1; k=rsa; "
+#     "p=MIIBIjANBgkqhki..." )
+
+# COPY THIS OUTPUT — you need the selector name and key value for DNS
+
+# Verify DKIM is configured
+/opt/zimbra/libexec/zmdkimkeyutil -q -d clientco.com
+
+# Test signing after DNS record is added (send a test mail then check log)
+grep "opendkim\|dkim" /var/log/zimbra.log | tail -5
+# Want to see: dkim_sd=SELECTOR:clientco.com  (not "no signing table match")
+```
+
+Add to DNS (see Section 4 for full DNS zone):
+```dns
+SELECTOR._domainkey.clientco.com.  IN  TXT
+  ( "v=DKIM1; k=rsa; "
+    "p=<paste full key here>" )
+```
+
+---
+
+### 2.4 SPF Record
+
+Add to DNS (replace IP with your Zimbra server's actual sending IP):
+
+```dns
+; Authorize only Zimbra to send as clientco.com
+clientco.com.  IN  TXT  "v=spf1 mx ip4:10.10.10.110 -all"
+```
+
+**SPF qualifier guide:**
+
+| Qualifier | DNS value | Effect |
+|---|---|---|
+| Hard fail | `-all` | Receiving servers reject non-matching senders |
+| Soft fail | `~all` | Accept but mark suspicious |
+| Neutral | `?all` | No policy |
+| Pass all | `+all` | Everyone allowed — never use this |
+
+**Recommended for production:** `-all` (hard fail) once you are certain all sending IPs are listed.
+**Recommended for initial setup:** `~all` (soft fail) while testing, then change to `-all`.
+
+---
+
+### 2.5 DMARC Record
+
+```dns
+; DMARC for clientco.com
+_dmarc.clientco.com.  IN  TXT
+  "v=DMARC1; p=quarantine; rua=mailto:postmaster@clientco.com; pct=100; adkim=r; aspf=r"
+```
+
+**DMARC policy progression:**
+
+```
+Start:      p=none       ← monitor only, no enforcement
+After 2wks: p=quarantine ← non-compliant mail goes to spam
+Production: p=reject     ← non-compliant mail rejected outright
+```
+
+**Fields explained:**
+
+| Field | Value | Meaning |
+|---|---|---|
+| `p` | `none/quarantine/reject` | What to do with failing mail |
+| `rua` | `mailto:postmaster@clientco.com` | Where to send aggregate reports |
+| `pct` | `100` | Apply policy to 100% of mail |
+| `adkim` | `r` | Relaxed DKIM alignment |
+| `aspf` | `r` | Relaxed SPF alignment |
+
+---
+
+### 2.6 Create Client Admin Account
+
+```bash
+su - zimbra
+
+# Create the domain admin account
+zmprov createAccount \
+  domainadmin@clientco.com \
+  'C1!entAdm1nP@ss' \
+  displayName "ClientCo Domain Admin" \
+  zimbraIsAdminAccount FALSE
+
+# Verify account created
+zmprov ga domainadmin@clientco.com | grep -E "mail:|displayName:|zimbraIsAdminAccount"
+```
+
+---
+
+### 2.7 Delegate Admin Privileges to Client Admin
+
+Zimbra uses **Domain Admin** role — gives full control over one domain only.
+
+```bash
+su - zimbra
+
+# Grant domain admin rights scoped to clientco.com only
+zmprov grantRight domain clientco.com \
+  usr domainadmin@clientco.com \
+  domainAdminConsoleRights
+
+# Grant the account the isDomainAdminAccount flag
+zmprov modifyAccount domainadmin@clientco.com \
+  zimbraIsDelegatedAdminAccount TRUE
+
+# Also grant specific rights explicitly
+zmprov grantRight domain clientco.com \
+  usr domainadmin@clientco.com \
+  createAccount
+
+zmprov grantRight domain clientco.com \
+  usr domainadmin@clientco.com \
+  deleteAccount
+
+zmprov grantRight domain clientco.com \
+  usr domainadmin@clientco.com \
+  getAccountInfo
+
+zmprov grantRight domain clientco.com \
+  usr domainadmin@clientco.com \
+  modifyAccount
+
+zmprov grantRight domain clientco.com \
+  usr domainadmin@clientco.com \
+  listAccount
+
+# Verify rights granted
+zmprov getRight domain clientco.com usr domainadmin@clientco.com
+```
+
+---
+
+### 2.8 Restrict Admin to Own Domain Only
+
+The delegated admin setup above already scopes rights to `clientco.com` only. Confirm this:
+
+```bash
+su - zimbra
+
+# List all rights the domain admin has — should only show clientco.com
+zmprov getRightsDoc | grep clientco
+
+# Verify they CANNOT access another domain
+zmprov grantRight domain accesswt.com \
+  usr domainadmin@clientco.com \
+  listAccount
+# This should NOT be run — just confirming it has NOT been granted
+
+# Test: log in as domain admin to admin console
+# URL: https://zimbraserver:7071
+# Login: domainadmin@clientco.com
+# They should ONLY see accounts under clientco.com
+```
+
+**What domain admin CAN do:**
+- Create, modify, delete accounts under `clientco.com`
+- Set passwords for accounts under `clientco.com`
+- View mail logs for `clientco.com` accounts
+- Manage aliases under `clientco.com`
+- Set quotas for individual accounts (within domain quota)
+- Manage distribution lists under `clientco.com`
+
+**What domain admin CANNOT do:**
+- Access accounts from other domains
+- Change global Zimbra settings
+- Add or remove domains
+- Access the super admin (zimbra) account
+- Change server-level configuration
+
+---
+
+### 2.9 Create End-User Accounts Under Client Domain
+
+```bash
+su - zimbra
+
+# Create individual user accounts
+zmprov ca user1@clientco.com 'UserP@ss2026!' \
+  displayName "User One" \
+  zimbraMailQuota 1073741824
+
+zmprov ca user2@clientco.com 'UserP@ss2026!' \
+  displayName "User Two" \
+  zimbraMailQuota 1073741824
+
+# Bulk create from a list (script)
+cat > /tmp/create_client_users.sh << 'SCRIPT'
+#!/bin/bash
+DOMAIN="clientco.com"
+PASSWORD="TempP@ss2026!"
+QUOTA="1073741824"   # 1 GB in bytes
+
+USERS=(
+  "info:Info Department"
+  "support:Support Team"
+  "accounts:Accounts Team"
+  "hr:Human Resources"
+  "sales:Sales Team"
+)
+
+for ENTRY in "${USERS[@]}"; do
+  USERNAME="${ENTRY%%:*}"
+  DISPLAY="${ENTRY##*:}"
+  EMAIL="${USERNAME}@${DOMAIN}"
+  echo "Creating ${EMAIL}..."
+  zmprov ca "${EMAIL}" "${PASSWORD}" \
+    displayName "${DISPLAY}" \
+    zimbraMailQuota "${QUOTA}" \
+    zimbraPasswordMustChange TRUE
+  echo "  Done: ${EMAIL}"
+done
+
+echo ""
+echo "All accounts created. Verifying..."
+zmprov -l gaa "${DOMAIN}"
+SCRIPT
+
+chmod +x /tmp/create_client_users.sh
+/tmp/create_client_users.sh
+```
+
+---
+
+### 2.10 Set Quotas and Policies
+
+```bash
+su - zimbra
+
+# Set domain-level total quota (limits entire clientco.com domain)
+zmprov md clientco.com zimbraDomainAggregateQuota 10737418240
+# 10737418240 bytes = 10 GB total for the domain
+
+# Set default per-account quota (applies to new accounts)
+zmprov md clientco.com zimbraMailQuota 1073741824
+# 1073741824 bytes = 1 GB per account
+
+# Set password policy for domain
+zmprov md clientco.com \
+  zimbraPasswordMinLength 8 \
+  zimbraPasswordMinUpperCaseChars 1 \
+  zimbraPasswordMinLowerCaseChars 1 \
+  zimbraPasswordMinNumericChars 1 \
+  zimbraPasswordMinPunctuationChars 1 \
+  zimbraPasswordMaxAge 90 \
+  zimbraPasswordMinAge 1 \
+  zimbraMaxLoginAttempts 5 \
+  zimbraFailedLoginLockoutDuration 1800
+
+# Set message size limit for domain (bytes)
+zmprov md clientco.com zimbraMailContentMaxSize 26214400
+# 26214400 bytes = 25 MB per message
+
+# Verify all settings
+zmprov gd clientco.com | grep -E "zimbraMailQuota|zimbraPassword|zimbraMax"
+```
+
+---
+
+### 2.11 Verify Everything — Zimbra
+
+```bash
+su - zimbra
+
+echo "=== Domain exists ==="
+zmprov gd clientco.com | grep zimbraDomainName
+
+echo "=== DKIM configured ==="
+/opt/zimbra/libexec/zmdkimkeyutil -q -d clientco.com
+
+echo "=== Accounts listed ==="
+zmprov -l gaa clientco.com
+
+echo "=== Admin rights ==="
+zmprov getRights domain clientco.com usr domainadmin@clientco.com 2>/dev/null
+
+echo "=== Send test mail ==="
+echo "Subject: Client setup test
+
+Testing clientco.com setup on Zimbra." \
+  | /opt/zimbra/common/sbin/sendmail \
+  -f info@clientco.com \
+  domainadmin@clientco.com
+
+echo "=== Check delivery ==="
+sleep 5
+zmmailbox -z -m domainadmin@clientco.com \
+  search "in:inbox subject:\"Client setup test\""
+
+echo "=== Check DKIM signed ==="
+grep "dkim_sd.*clientco.com" /var/log/zimbra.log | tail -3
+```
+
+---
+
+## 3. Axigen — Complete Client Domain Setup
+
+### 3.1 Create Domain
+
+#### Via WebAdmin (GUI)
+
+```
+WebAdmin → DOMAINS & ACCOUNTS → Manage Domains → + ADD
+
+  Domain name:          clientco.com
+  Domain Location:      /var/opt/axigen/domains/   (default)
+  Postmaster password:  (set a strong password)
+  Public hostname:      mail.clientco.com
+
+→ Click CONTINUE through all steps → FINISH
+```
+
+#### Via Axigen CLI
+
+```bash
+sudo axigen-cli << 'EOF'
+add domain name="clientco.com" \
+  location="/var/opt/axigen/domains/clientco.com" \
+  publicName="mail.clientco.com"
+commit
+EOF
+
+# Verify domain directory was created
+sudo ls -la /var/opt/axigen/domains/clientco.com/
+```
+
+---
+
+### 3.2 SSL/TLS Certificate
+
+Axigen uses a combined PEM file (cert + key together) and applies it to all services.
+
+#### Option A — Self-signed (lab/internal)
+
+```bash
+# Create SSL directory for this client
+sudo mkdir -p /var/opt/axigen/ssl/clientco
+
+# Generate 2-year self-signed cert
+sudo openssl req -x509 -nodes -days 730 -newkey rsa:2048 \
+  -keyout /var/opt/axigen/ssl/clientco/mail.clientco.key \
+  -out    /var/opt/axigen/ssl/clientco/mail.clientco.crt \
+  -subj "/C=NP/ST=Bagmati/L=Kathmandu/O=ClientCo/CN=mail.clientco.com"
+
+# Combine into single PEM file (Axigen requirement)
+sudo bash -c 'cat /var/opt/axigen/ssl/clientco/mail.clientco.crt \
+  /var/opt/axigen/ssl/clientco/mail.clientco.key \
+  > /var/opt/axigen/ssl/clientco/mail.clientco.pem'
+
+sudo chown axigen:axigen /var/opt/axigen/ssl/clientco/mail.clientco.pem
+sudo chmod 600 /var/opt/axigen/ssl/clientco/mail.clientco.pem
+
+# Verify cert content
+sudo openssl x509 -in /var/opt/axigen/ssl/clientco/mail.clientco.crt \
+  -noout -subject -dates
+```
+
+#### Option B — Let's Encrypt (production)
+
+```bash
+sudo apt install -y certbot
+
+# Stop Axigen webmail temporarily on port 443
+# Or use webroot if you have a web server
+
+sudo certbot certonly --standalone \
+  -d mail.clientco.com \
+  --agree-tos \
+  --email admin@clientco.com
+
+# Combine for Axigen
+sudo bash -c 'cat \
+  /etc/letsencrypt/live/mail.clientco.com/fullchain.pem \
+  /etc/letsencrypt/live/mail.clientco.com/privkey.pem \
+  > /var/opt/axigen/ssl/clientco/mail.clientco.pem'
+
+sudo chown axigen:axigen /var/opt/axigen/ssl/clientco/mail.clientco.pem
+sudo chmod 600 /var/opt/axigen/ssl/clientco/mail.clientco.pem
+
+# Auto-renewal hook
+sudo tee /etc/letsencrypt/renewal-hooks/deploy/axigen-clientco.sh << 'HOOK'
+#!/bin/bash
+bash -c 'cat \
+  /etc/letsencrypt/live/mail.clientco.com/fullchain.pem \
+  /etc/letsencrypt/live/mail.clientco.com/privkey.pem \
+  > /var/opt/axigen/ssl/clientco/mail.clientco.pem'
+chown axigen:axigen /var/opt/axigen/ssl/clientco/mail.clientco.pem
+chmod 600 /var/opt/axigen/ssl/clientco/mail.clientco.pem
+systemctl reload axigen
+HOOK
+sudo chmod +x /etc/letsencrypt/renewal-hooks/deploy/axigen-clientco.sh
+```
+
+#### Import certificate into Axigen WebAdmin
+
+```
+WebAdmin → SECURITY & FILTERING → SSL Certificates → + ADD
+
+  Certificate source: Upload / Import
+  Certificate file:   /var/opt/axigen/ssl/clientco/mail.clientco.pem
+  (or paste PEM contents directly)
+
+→ Save
+
+Then assign to services:
+  SMTP Receiving → Security tab → SSL Certificate: mail.clientco.com cert
+  IMAP           → Security tab → SSL Certificate: mail.clientco.com cert
+  WebMail        → Security tab → SSL Certificate: mail.clientco.com cert
+```
+
+Verify:
+```bash
+openssl s_client -connect 10.10.10.111:993 </dev/null 2>/dev/null \
+  | openssl x509 -noout -subject -dates
+# Expected: CN=mail.clientco.com
+```
+
+---
+
+### 3.3 DKIM Key
+
+```bash
+# Generate DKIM key pair for clientco.com
+SELECTOR="mail$(date +%Y%m)"   # e.g. mail202607
+DOMAIN="clientco.com"
+KEY_DIR="/var/opt/axigen/dkim/${DOMAIN}"
+
+sudo mkdir -p "$KEY_DIR"
+
+# Generate 2048-bit RSA key
+sudo openssl genrsa -out "${KEY_DIR}/${SELECTOR}.private" 2048
+sudo openssl rsa -in "${KEY_DIR}/${SELECTOR}.private" \
+  -pubout -out "${KEY_DIR}/${SELECTOR}.public"
+
+sudo chown -R axigen:axigen "$KEY_DIR"
+sudo chmod 600 "${KEY_DIR}/${SELECTOR}.private"
+
+# Extract public key value for DNS (remove header/footer lines and newlines)
+PUBKEY=$(sudo openssl rsa -in "${KEY_DIR}/${SELECTOR}.private" \
+  -pubout 2>/dev/null \
+  | grep -v "PUBLIC KEY" | tr -d '\n')
+
+echo "DNS TXT record to add:"
+echo "${SELECTOR}._domainkey.${DOMAIN}.  IN  TXT  \"v=DKIM1; k=rsa; p=${PUBKEY}\""
+```
+
+#### Configure DKIM signing in Axigen WebAdmin
+
+```
+WebAdmin → DOMAINS & ACCOUNTS → Manage Domains → clientco.com
+  → Security tab (or DKIM tab depending on version)
+    DKIM signing:  Enabled
+    Selector:      mail202607   (whatever you used above)
+    Private key:   /var/opt/axigen/dkim/clientco.com/mail202607.private
+    → Save
+```
+
+Or via Axigen's built-in DKIM generator:
+```
+WebAdmin → SECURITY & FILTERING → SSL Certificates
+  → Look for DKIM section
+  → Generate key for domain clientco.com
+  → Copy the resulting TXT record for DNS
+```
+
+---
+
+### 3.4 SPF Record
+
+Same as Zimbra section — add to DNS:
+
+```dns
+clientco.com.  IN  TXT  "v=spf1 mx ip4:10.10.10.111 -all"
+```
+
+---
+
+### 3.5 DMARC Record
+
+Same as Zimbra section — add to DNS:
+
+```dns
+_dmarc.clientco.com.  IN  TXT
+  "v=DMARC1; p=quarantine; rua=mailto:postmaster@clientco.com; pct=100"
+```
+
+---
+
+### 3.6 Create Client Admin Account
+
+```
+WebAdmin → DOMAINS & ACCOUNTS → Manage Accounts → + ADD ACCOUNT
+
+  Domain name:      clientco.com
+  First name:       ClientCo
+  Last name:        Admin
+  Account name:     domainadmin
+  Account password: (set strong password)
+  Account type:     Premium
+  → QUICK ADD
+```
+
+---
+
+### 3.7 Delegate Admin Privileges to Client Admin
+
+Axigen uses role-based domain administration.
+
+```
+WebAdmin → DOMAINS & ACCOUNTS → Manage Domains → clientco.com
+  → Admins tab
+    → + ADD
+      Account: domainadmin@clientco.com
+      Role:    Domain Administrator
+    → Save
+```
+
+**Domain Administrator role grants:**
+- Full control over all accounts in `clientco.com`
+- Manage aliases, distribution lists, public folders
+- Set per-account quotas
+- View domain-level logs and statistics
+- Cannot access other domains or global settings
+
+**Verify via WebAdmin:**
+```
+WebAdmin → DOMAINS & ACCOUNTS → Manage Domains → clientco.com → Admins tab
+  Should list: domainadmin@clientco.com  Role: Domain Administrator
+```
+
+---
+
+### 3.8 Restrict Admin to Own Domain Only
+
+Axigen's domain admin role is automatically scoped — the client admin logs into:
+
+```
+https://axigenserver:9443
+Login: domainadmin@clientco.com
+Password: (their password)
+```
+
+When they log in as a domain admin:
+- Left sidebar shows ONLY `clientco.com` in domain list
+- They cannot see or switch to other domains
+- Global settings menu is hidden
+- Server configuration is read-only or hidden
+
+**Verify this by logging in as the domain admin and confirming:**
+```
+1. Only clientco.com appears in domain selector
+2. Cannot click on school.accesswt.com or fitness.accesswt.com
+3. Services Management is not accessible
+4. Global Settings is restricted
+```
+
+---
+
+### 3.9 Create End-User Accounts Under Client Domain
+
+#### Via WebAdmin (one at a time)
+
+```
+WebAdmin → DOMAINS & ACCOUNTS → Manage Accounts → + ADD ACCOUNT
+  Domain name:    clientco.com
+  Account name:   info
+  Password:       (strong password)
+  Account type:   Premium
+→ QUICK ADD
+
+Repeat for each user:
+  info@clientco.com
+  support@clientco.com
+  accounts@clientco.com
+  hr@clientco.com
+  sales@clientco.com
+```
+
+#### Via Python script (bulk create)
+
+```python
+#!/usr/bin/env python3
+# /tmp/axigen_create_users.py
+# Uses Axigen's IMAP admin API to create accounts
+# Adjust ACCOUNTS list for each client
+
+import subprocess
+import sys
+
+DOMAIN   = "clientco.com"
+PASSWORD = "TempP@ss2026!"
+
+USERS = [
+    ("info",     "Info Department"),
+    ("support",  "Support Team"),
+    ("accounts", "Accounts Team"),
+    ("hr",       "Human Resources"),
+    ("sales",    "Sales Team"),
+]
+
+for username, display in USERS:
+    email = f"{username}@{DOMAIN}"
+    print(f"Creating {email}...")
+    # Use axigen-cli if available
+    cmd = f"""sudo axigen-cli << 'EOF'
+select domain "{DOMAIN}"
+add account name="{username}" password="{PASSWORD}" displayName="{display}"
+commit
+EOF"""
+    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    if result.returncode == 0:
+        print(f"  ✓ {email}")
+    else:
+        print(f"  ✗ {email}: {result.stderr.strip()}")
+```
+
+```bash
+python3 /tmp/axigen_create_users.py
+```
+
+---
+
+### 3.10 Set Quotas and Policies
+
+```
+WebAdmin → DOMAINS & ACCOUNTS → Manage Domains → clientco.com
+  → Account Defaults tab:
+      Default disk quota:     1024 MB  (per account)
+      Maximum message size:   25 MB
+      Max recipients per msg: 50
+
+  → Domain Limits tab:
+      Total domain quota:     10 GB
+      Max accounts:           50
+
+  → Security tab:
+      Password min length:    8
+      Password complexity:    Require uppercase + number + special
+      Max login failures:     5
+      Lockout duration:       30 minutes
+```
+
+---
+
+### 3.11 Verify Everything — Axigen
+
+```bash
+# Check domain directory exists
+sudo ls -la /var/opt/axigen/domains/clientco.com/
+
+# Check DKIM key exists
+sudo ls -la /var/opt/axigen/dkim/clientco.com/ 2>/dev/null
+
+# Verify SSL cert
+openssl s_client -connect 10.10.10.111:993 </dev/null 2>/dev/null \
+  | openssl x509 -noout -subject -dates
+
+# Check domain admin can log in
+python3 << 'EOF'
+import imaplib
+try:
+    m = imaplib.IMAP4_SSL("10.10.10.111", 993)
+    m.login("domainadmin@clientco.com", "AdminPassword")
+    print("✓ Domain admin login OK")
+    m.logout()
+except Exception as e:
+    print(f"✗ Login failed: {e}")
+EOF
+
+# Send test mail
+swaks --to domainadmin@clientco.com \
+      --from info@clientco.com \
+      --server 10.10.10.111 \
+      --port 25 \
+      --header "Subject: Axigen client setup test" \
+      --body "Testing clientco.com full setup on Axigen."
+
+# Check delivery
+sleep 5
+sudo grep "Mail delivered to mailbox.*clientco" \
+  /var/opt/axigen/log/everything.txt | tail -3
+
+# Check SPF result on received mail
+sudo grep "SPF result.*clientco" \
+  /var/opt/axigen/log/everything.txt | tail -3
+```
+
+---
+
+## 4. DNS Zone — All Records for All Clients
+
+Add to `/etc/bind/zones/db.accesswt.com` (for accesswt.com hosted subdomains)
+OR to a separate zone file if client has their own domain (e.g. `db.clientco.com`).
+
+### For client subdomain (e.g. clientco.accesswt.com)
+
+```dns
+; ── A record ──────────────────────────────────────────────────────
+clientco            A       10.10.10.110        ; Zimbra
+; or
+clientco            A       10.10.10.111        ; Axigen
+
+; ── MX record ─────────────────────────────────────────────────────
+clientco.accesswt.com.  IN  MX  10  zimbra.accesswt.com.
+; or for Axigen:
+clientco.accesswt.com.  IN  MX  10  axigen.accesswt.com.
+
+; ── SPF ───────────────────────────────────────────────────────────
+clientco.accesswt.com.  IN  TXT  "v=spf1 mx ip4:10.10.10.110 ~all"
+
+; ── DKIM (paste selector and key from Step 2.3 or 3.3) ───────────
+SELECTOR._domainkey.clientco.accesswt.com.  IN  TXT
+  ( "v=DKIM1; k=rsa; "
+    "p=<public key here>" )
+
+; ── DMARC ─────────────────────────────────────────────────────────
+_dmarc.clientco.accesswt.com.  IN  TXT
+  "v=DMARC1; p=quarantine; rua=mailto:postmaster@clientco.accesswt.com; pct=100"
+```
+
+### For client's own domain (e.g. clientco.com — separate zone file)
+
+```bash
+# On ns1 — create new zone file
+sudo nano /etc/bind/zones/db.clientco.com
+```
+
+```dns
+$ORIGIN .
+$TTL 3600
+clientco.com    IN  SOA  ns1.accesswt.com. admin.accesswt.com. (
+                    2026070801  ; serial
+                    3600        ; refresh
+                    900         ; retry
+                    604800      ; expire
+                    3600 )      ; minimum
+
+; Nameservers (point to your ns1/ns2)
+                IN  NS   ns1.accesswt.com.
+                IN  NS   ns2.accesswt.com.
+
+$ORIGIN clientco.com.
+
+; Mail server A record
+mail            IN  A    10.10.10.110
+
+; MX — mail goes to your server
+@               IN  MX   10  mail.clientco.com.
+
+; SPF
+@               IN  TXT  "v=spf1 mx ip4:10.10.10.110 ~all"
+
+; DKIM (replace SELECTOR and KEY with actual values)
+SELECTOR._domainkey  IN  TXT  ( "v=DKIM1; k=rsa; " "p=<key>" )
+
+; DMARC
+_dmarc          IN  TXT  "v=DMARC1; p=quarantine; rua=mailto:postmaster@clientco.com; pct=100"
+
+; Webmail CNAME (optional — lets clients use mail.clientco.com in browser)
+; mail             CNAME  zimbra.accesswt.com.
+```
+
+```bash
+# Declare the new zone in named.conf.local on ns1
+sudo nano /etc/bind/named.conf.local
+```
+
+```
+zone "clientco.com" {
+    type master;
+    file "/etc/bind/zones/db.clientco.com";
+    allow-transfer { key "transfer-key"; };
+    also-notify { 10.10.10.107; 10.10.10.108; };
+    notify yes;
+};
+```
+
+```bash
+# Check and reload
+sudo named-checkzone clientco.com /etc/bind/zones/db.clientco.com
+sudo systemctl reload bind9
+
+# Verify all records
+dig @10.10.10.106 clientco.com MX +short
+dig @10.10.10.106 clientco.com TXT +short
+dig @10.10.10.106 _dmarc.clientco.com TXT +short
+```
+
+---
+
+## 5. Client Admin — What They Can and Cannot Do
+
+### Zimbra Domain Admin Permissions
+
+| Action | Can Do | Cannot Do |
+|---|---|---|
+| Create accounts in own domain | ✓ | |
+| Delete accounts in own domain | ✓ | |
+| Reset passwords in own domain | ✓ | |
+| View mailbox of any user in domain | ✓ | |
+| Create aliases in own domain | ✓ | |
+| Create distribution lists in own domain | ✓ | |
+| Set quota per account | ✓ | |
+| View domain mail statistics | ✓ | |
+| Access accounts in other domains | | ✗ |
+| Change global Zimbra settings | | ✗ |
+| Add/remove domains | | ✗ |
+| Access Zimbra super-admin account | | ✗ |
+| Change SSL certificates | | ✗ |
+| Access server logs | | ✗ |
+| Change DNS or SPF/DKIM/DMARC | | ✗ |
+
+### Axigen Domain Admin Permissions
+
+| Action | Can Do | Cannot Do |
+|---|---|---|
+| Create accounts in own domain | ✓ | |
+| Delete accounts in own domain | ✓ | |
+| Reset passwords in own domain | ✓ | |
+| Manage aliases in own domain | ✓ | |
+| Manage mailing lists in own domain | ✓ | |
+| Set per-account quotas | ✓ | |
+| Configure spam/antivirus per domain | ✓ | |
+| View domain delivery logs | ✓ | |
+| Access accounts in other domains | | ✗ |
+| Change global Axigen settings | | ✗ |
+| Add/remove domains | | ✗ |
+| Manage SSL certificates | | ✗ |
+| Access server-level configuration | | ✗ |
+| Change SMTP/IMAP service settings | | ✗ |
+
+### Client Admin Login URLs
+
+| Server | Admin Console URL | Login |
+|---|---|---|
+| Zimbra | `https://zimbra-server:7071` | `domainadmin@clientco.com` |
+| Axigen | `https://axigen-server:9443` | `domainadmin@clientco.com` |
+
+---
+
+## 6. Handoff Checklist for Each Client
+
+Use this checklist to confirm a client domain is fully set up before handing over credentials.
+
+```
+CLIENT DOMAIN SETUP CHECKLIST
+Domain: ______________________
+Server: [ ] Zimbra  [ ] Axigen
+Date:   ______________________
+
+INFRASTRUCTURE
+  [ ] Domain created on mail server
+  [ ] Domain directory exists on filesystem
+  [ ] MX record added to DNS
+  [ ] A record for mail hostname added to DNS
+
+SSL/TLS
+  [ ] Certificate generated/obtained for mail hostname
+  [ ] Certificate deployed to mail server
+  [ ] Certificate assigned to SMTP, IMAP, WebMail services
+  [ ] openssl s_client confirms correct CN and expiry date
+  [ ] Certificate expiry reminder set in calendar
+
+AUTHENTICATION RECORDS
+  [ ] DKIM key generated on mail server
+  [ ] DKIM public key TXT record added to DNS
+  [ ] DKIM DNS record resolves correctly (dig +short)
+  [ ] Test mail confirms dkim=pass in received headers (or dkim_sd= in Zimbra log)
+  [ ] SPF TXT record added to DNS
+  [ ] SPF record matches sending server IP
+  [ ] DMARC TXT record added to DNS
+  [ ] DMARC rua address is a valid monitored mailbox
+
+ADMIN ACCOUNT
+  [ ] Domain admin account created (domainadmin@domain)
+  [ ] Admin password set and recorded securely
+  [ ] Domain admin role assigned (scoped to client domain only)
+  [ ] Admin can log into admin console
+  [ ] Admin CANNOT see other client domains (verified)
+  [ ] Admin credentials handed to client via secure method
+
+USER ACCOUNTS
+  [ ] All requested user accounts created
+  [ ] Temporary passwords set with force-change on first login
+  [ ] Per-account quotas set (default 1 GB)
+  [ ] Domain total quota set
+
+POLICIES
+  [ ] Password complexity rules configured
+  [ ] Account lockout after failed attempts configured
+  [ ] Maximum message size configured
+  [ ] Webmail URL confirmed working
+
+TEST MAIL
+  [ ] Test mail sent from client domain — delivered successfully
+  [ ] Test mail received from external — delivered to inbox (not spam)
+  [ ] SPF check shows PASS in receiving server logs
+  [ ] DKIM check shows PASS in receiving server logs
+  [ ] SpamAssassin score below 2.0 for outgoing mail
+
+DOCUMENTATION HANDED TO CLIENT
+  [ ] Webmail URL
+  [ ] IMAP/SMTP settings for mail clients
+  [ ] Admin console URL and credentials
+  [ ] All user account credentials (via secure channel)
+  [ ] Ticket/support contact
+```
+
+---
+
+## 7. Quick Command Reference
+
+### Zimbra — per-client commands
+
+```bash
+su - zimbra
+
+# Create domain
+zmprov createDomain DOMAIN zimbraAuthMech zimbra
+
+# Generate DKIM
+/opt/zimbra/libexec/zmdkimkeyutil -a -d DOMAIN
+
+# Create domain admin
+zmprov createAccount admin@DOMAIN 'PASSWORD' zimbraIsDelegatedAdminAccount TRUE
+
+# Grant domain admin rights
+zmprov grantRight domain DOMAIN usr admin@DOMAIN domainAdminConsoleRights
+
+# Create user
+zmprov ca user@DOMAIN 'PASSWORD' displayName "Name" zimbraMailQuota 1073741824
+
+# Set domain quota
+zmprov md DOMAIN zimbraDomainAggregateQuota 10737418240
+
+# List all accounts
+zmprov -l gaa DOMAIN
+
+# Verify DKIM
+/opt/zimbra/libexec/zmdkimkeyutil -q -d DOMAIN
+
+# Check domain admin rights
+zmprov getRights domain DOMAIN usr admin@DOMAIN
+```
+
+### Axigen — per-client commands
+
+```bash
+# Generate SSL cert
+sudo openssl req -x509 -nodes -days 730 -newkey rsa:2048 \
+  -keyout /var/opt/axigen/ssl/DOMAIN/mail.key \
+  -out    /var/opt/axigen/ssl/DOMAIN/mail.crt \
+  -subj "/CN=mail.DOMAIN"
+
+# Combine PEM
+sudo bash -c 'cat mail.crt mail.key > /var/opt/axigen/ssl/DOMAIN/mail.pem'
+sudo chown axigen:axigen /var/opt/axigen/ssl/DOMAIN/mail.pem
+
+# Check domain directory
+sudo ls /var/opt/axigen/domains/DOMAIN/accounts/
+
+# Check delivered mail count
+sudo find /var/opt/axigen/domains/DOMAIN -name "*.eml" | wc -l
+
+# Tail log for domain activity
+sudo grep "DOMAIN" /var/opt/axigen/log/everything.txt | tail -20
+
+# Verify SSL on IMAPS
+openssl s_client -connect AXIGEN-IP:993 </dev/null 2>/dev/null \
+  | openssl x509 -noout -subject -dates
+
+# Verify SPF in log
+sudo grep "SPF result.*DOMAIN" /var/opt/axigen/log/everything.txt | tail -5
+```
+
+### DNS — per-client records
+
+```bash
+# Add records to zone
+sudo rndc freeze accesswt.com
+sudo nano /etc/bind/zones/db.accesswt.com
+# Add: A, MX, SPF TXT, DKIM TXT, DMARC TXT
+# Increment serial
+
+sudo named-checkzone accesswt.com /etc/bind/zones/db.accesswt.com
+sudo rndc reload accesswt.com
+sudo rndc thaw accesswt.com
+
+# Verify all records
+for TYPE in MX TXT; do
+  echo "=== clientco.com $TYPE ==="
+  dig @10.10.10.106 clientco.com $TYPE +short
+done
+dig @10.10.10.106 _dmarc.clientco.com TXT +short
+```
+
+---
+*Client Domain Setup Guide — accesswt.com Mail Infrastructure*
+*Zimbra 10.1.16 + Axigen 10.6.35 | July 2026*
+
+---
+
+## 8. Distribution Lists — Complete Guide and Test Cases
+
+### 8.1 What is a Distribution List?
+
+A distribution list (DL) is a single email address that delivers to multiple recipients simultaneously. When someone sends to `team@clientco.com`, every member of that list receives the message — without the sender needing to know who the individual members are.
+
+```
+Sender → team@clientco.com
+              │
+              ├── user1@clientco.com
+              ├── user2@clientco.com
+              ├── user3@clientco.com
+              └── admin@clientco.com
+```
+
+**Common use cases:**
+
+| List address | Purpose |
+|---|---|
+| `all@clientco.com` | Company-wide announcements |
+| `support@clientco.com` | All support staff receive tickets |
+| `management@clientco.com` | Management team only |
+| `it@clientco.com` | IT department group |
+| `newsletter@clientco.com` | All subscribers |
+
+---
+
+### 8.2 Distribution Lists on Zimbra
+
+#### Create a distribution list
+
+```bash
+su - zimbra
+
+# Basic creation
+zmprov createDistributionList team@clientco.com \
+  displayName "ClientCo Team" \
+  description "All staff at ClientCo"
+
+# Verify created
+zmprov gdl team@clientco.com
+```
+
+#### Add members to the list
+
+```bash
+su - zimbra
+
+# Add single member
+zmprov addDistributionListMember team@clientco.com \
+  user1@clientco.com
+
+# Add multiple members at once
+zmprov addDistributionListMember team@clientco.com \
+  user1@clientco.com \
+  user2@clientco.com \
+  user3@clientco.com \
+  admin@clientco.com
+
+# Verify members
+zmprov getDistributionListMembership team@clientco.com
+# or
+zmprov gdlm team@clientco.com
+```
+
+#### List all distribution lists in a domain
+
+```bash
+su - zimbra
+zmprov getAllDistributionLists clientco.com
+```
+
+#### Modify a distribution list
+
+```bash
+su - zimbra
+
+# Rename / change display name
+zmprov modifyDistributionList team@clientco.com \
+  displayName "All ClientCo Staff"
+
+# Change description
+zmprov modifyDistributionList team@clientco.com \
+  description "Updated description"
+```
+
+#### Remove a member
+
+```bash
+su - zimbra
+zmprov removeDistributionListMember team@clientco.com \
+  user3@clientco.com
+
+# Verify removal
+zmprov gdlm team@clientco.com
+```
+
+#### Delete a distribution list
+
+```bash
+su - zimbra
+zmprov deleteDistributionList team@clientco.com
+
+# Verify deleted
+zmprov getAllDistributionLists clientco.com
+```
+
+#### Restrict who can send to the list
+
+By default anyone can send to a DL. To restrict to members only or specific senders:
+
+```bash
+su - zimbra
+
+# Only allow members to send to the list
+zmprov modifyDistributionList team@clientco.com \
+  zimbraDistributionListSendShareMessageToNewMember TRUE
+
+# Allow only specific senders (set a policy)
+# Via Admin Console: Manage → Distribution Lists → team@clientco.com
+# → Subscription tab → Access Policy → Restricted
+```
+
+#### Nested distribution lists (list within a list)
+
+```bash
+su - zimbra
+
+# Create sub-lists
+zmprov createDistributionList management@clientco.com \
+  displayName "Management"
+zmprov addDistributionListMember management@clientco.com \
+  admin@clientco.com
+
+zmprov createDistributionList developers@clientco.com \
+  displayName "Developers"
+zmprov addDistributionListMember developers@clientco.com \
+  user1@clientco.com \
+  user2@clientco.com
+
+# Create parent list containing both sub-lists
+zmprov createDistributionList everyone@clientco.com \
+  displayName "Everyone at ClientCo"
+
+# Add sub-lists as members (not just individual users)
+zmprov addDistributionListMember everyone@clientco.com \
+  management@clientco.com \
+  developers@clientco.com
+
+# When someone sends to everyone@clientco.com
+# Zimbra expands: everyone → management → admin
+#                         → developers → user1, user2
+```
+
+---
+
+### 8.3 Distribution Lists on Axigen
+
+#### Via WebAdmin
+
+```
+WebAdmin → DOMAINS & ACCOUNTS → Mailing Lists → + ADD
+
+  List name:   team
+  Domain:      clientco.com
+  Full address: team@clientco.com
+
+  Members tab → + ADD MEMBER
+    info@clientco.com
+    support@clientco.com
+    admin@clientco.com
+
+→ Save
+```
+
+#### Via Axigen CLI
+
+```bash
+sudo axigen-cli << 'EOF'
+select domain "clientco.com"
+add mailinglist name="team" description="All ClientCo Staff"
+add mailinglistmember list="team" address="info@clientco.com"
+add mailinglistmember list="team" address="support@clientco.com"
+add mailinglistmember list="team" address="admin@clientco.com"
+commit
+EOF
+
+# Verify
+sudo axigen-cli << 'EOF'
+select domain "clientco.com"
+show mailinglist "team"
+EOF
+```
+
+---
+
+### 8.4 Distribution List Test Cases
+
+#### Test 1 — Basic send to list
+
+```bash
+# Zimbra
+su - zimbra
+
+# Create test list with 3 members
+zmprov createDistributionList testlist@consultancy.accesswt.com \
+  displayName "Test List"
+zmprov addDistributionListMember testlist@consultancy.accesswt.com \
+  admin@consultancy.accesswt.com \
+  info@consultancy.accesswt.com \
+  user1@consultancy.accesswt.com
+
+# Send to the list
+echo "Subject: DL Test 1
+
+This should arrive in all three mailboxes." \
+  | /opt/zimbra/common/sbin/sendmail \
+  -f admin@consultancy.accesswt.com \
+  testlist@consultancy.accesswt.com
+
+sleep 5
+
+# Verify all three received it
+for ACCT in admin@consultancy.accesswt.com \
+            info@consultancy.accesswt.com \
+            user1@consultancy.accesswt.com; do
+  COUNT=$(zmmailbox -z -m "$ACCT" \
+    search "in:inbox subject:\"DL Test 1\"" \
+    | grep "^num:" | awk '{print $2}')
+  echo "$ACCT received: ${COUNT:-0} message(s)"
+done
+```
+
+**Expected result:** All three accounts show `received: 1 message(s)`
+
+---
+
+#### Test 2 — Cross-server list (Zimbra list includes Axigen member)
+
+```bash
+su - zimbra
+
+# Create a cross-server distribution list
+zmprov createDistributionList crossteam@consultancy.accesswt.com \
+  displayName "Cross Server Team"
+
+# Add Zimbra-hosted members
+zmprov addDistributionListMember crossteam@consultancy.accesswt.com \
+  admin@consultancy.accesswt.com
+
+# Add Axigen-hosted member (external to Zimbra)
+zmprov addDistributionListMember crossteam@consultancy.accesswt.com \
+  admin@school.accesswt.com
+
+# Send to the list
+echo "Subject: Cross Server DL Test
+
+Testing cross-server distribution list." \
+  | /opt/zimbra/common/sbin/sendmail \
+  -f info@consultancy.accesswt.com \
+  crossteam@consultancy.accesswt.com
+
+sleep 5
+
+# Verify Zimbra member received it
+zmmailbox -z -m admin@consultancy.accesswt.com \
+  search "in:inbox subject:\"Cross Server DL Test\""
+
+# Verify Axigen member received it
+python3 << 'EOF'
+import imaplib
+m = imaplib.IMAP4_SSL("10.10.10.111", 993)
+m.login("admin@school.accesswt.com", "password")
+m.select("INBOX", readonly=True)
+_, data = m.search(None, 'SUBJECT "Cross Server DL Test"')
+print(f"Axigen member received: {len(data[0].split())} message(s)")
+m.logout()
+EOF
+
+# Watch relay in Zimbra log
+grep "crossteam\|school.accesswt.com.*sent" /var/log/zimbra.log | tail -5
+```
+
+**Expected result:** Both Zimbra and Axigen members receive the message
+
+---
+
+#### Test 3 — Non-member tries to send to a restricted list
+
+```bash
+su - zimbra
+
+# Create restricted list (members-only sending)
+zmprov createDistributionList restricted@consultancy.accesswt.com \
+  displayName "Restricted List" \
+  zimbraDistributionListSubscriptionPolicy REJECT \
+  zimbraDistributionListUnsubscriptionPolicy REJECT
+
+zmprov addDistributionListMember restricted@consultancy.accesswt.com \
+  admin@consultancy.accesswt.com
+
+# Try sending as a NON-MEMBER
+echo "Subject: Restricted DL Test
+
+This should be rejected." \
+  | /opt/zimbra/common/sbin/sendmail \
+  -f user1@consultancy.accesswt.com \
+  restricted@consultancy.accesswt.com
+
+sleep 5
+
+# Check if it was rejected (look for bounce or access denied)
+grep "restricted@consultancy" /var/log/zimbra.log | tail -10
+zmmailbox -z -m user1@consultancy.accesswt.com search "in:inbox subject:Rejected"
+```
+
+**Expected result:** Non-member receives bounce or message is silently dropped depending on policy
+
+---
+
+#### Test 4 — Nested lists expand correctly
+
+```bash
+su - zimbra
+
+# Create parent and child lists
+zmprov createDistributionList group-a@consultancy.accesswt.com
+zmprov addDistributionListMember group-a@consultancy.accesswt.com \
+  user1@consultancy.accesswt.com \
+  user2@consultancy.accesswt.com
+
+zmprov createDistributionList group-b@consultancy.accesswt.com
+zmprov addDistributionListMember group-b@consultancy.accesswt.com \
+  user3@consultancy.accesswt.com \
+  user4@consultancy.accesswt.com
+
+zmprov createDistributionList allgroups@consultancy.accesswt.com
+zmprov addDistributionListMember allgroups@consultancy.accesswt.com \
+  group-a@consultancy.accesswt.com \
+  group-b@consultancy.accesswt.com
+
+# Send to the parent list
+echo "Subject: Nested DL Test
+
+Testing nested distribution list expansion." \
+  | /opt/zimbra/common/sbin/sendmail \
+  -f admin@consultancy.accesswt.com \
+  allgroups@consultancy.accesswt.com
+
+sleep 10
+
+# Verify all 4 end users received it (not the sub-lists themselves)
+for USER in user1 user2 user3 user4; do
+  COUNT=$(zmmailbox -z -m "${USER}@consultancy.accesswt.com" \
+    search "in:inbox subject:\"Nested DL Test\"" \
+    | grep "^num:" | awk '{print $2}')
+  echo "${USER}@consultancy.accesswt.com: ${COUNT:-0} message(s)"
+done
+```
+
+**Expected result:** All four users (user1 through user4) receive the message through nested expansion
+
+---
+
+#### Test 5 — Reply-to-all behavior
+
+```bash
+# Send to list
+echo "Subject: DL Reply Test
+
+Original message to list. Please reply-all." \
+  | /opt/zimbra/common/sbin/sendmail \
+  -f admin@consultancy.accesswt.com \
+  testlist@consultancy.accesswt.com
+
+# When a member clicks Reply All in webmail:
+# - Reply goes to: original sender + testlist@consultancy.accesswt.com
+# - This means ALL list members receive the reply too
+# - This is expected DL behavior — educate clients about this
+
+# To prevent reply-all storms, set list reply-to to sender only:
+zmprov modifyDistributionList testlist@consultancy.accesswt.com \
+  zimbraDistributionListSendShareMessageToNewMember FALSE
+```
+
+---
+
+#### Test 6 — Remove all members and delete list (cleanup)
+
+```bash
+su - zimbra
+
+# Get current member list
+MEMBERS=$(zmprov gdlm testlist@consultancy.accesswt.com \
+  | awk '{print $2}')
+
+# Remove each member
+for MEMBER in $MEMBERS; do
+  zmprov removeDistributionListMember testlist@consultancy.accesswt.com "$MEMBER"
+  echo "Removed: $MEMBER"
+done
+
+# Verify empty
+zmprov gdlm testlist@consultancy.accesswt.com
+# Expected: (no output — empty list)
+
+# Delete the list
+zmprov deleteDistributionList testlist@consultancy.accesswt.com
+
+# Verify deleted
+zmprov getAllDistributionLists consultancy.accesswt.com | grep testlist
+# Expected: (no output)
+```
+
+---
+
+### 8.5 Distribution List Summary
+
+| Scenario | Expected Behavior |
+|---|---|
+| Send to list with 3 members | All 3 receive it |
+| Send to list with cross-server member | Delivered via SMTP relay to external server |
+| Non-member sends to restricted list | Rejected with bounce |
+| Nested list (list within list) | Fully expanded, all end users receive |
+| Reply-all to list | Goes back to list, all members see reply |
+| Empty list receives mail | Message accepted, no deliveries made |
+| Deleted list receives mail | Bounced: address does not exist |
+
+---
+
+## 9. CA Bundle, CRT and Key — How to Install
+
+### 9.1 What each file is
+
+When a CA (Certificate Authority) or SSL provider gives you a certificate, they usually provide three files:
+
+| File | Contains | Purpose |
+|---|---|---|
+| `certificate.crt` | Your server's certificate | Identifies your server |
+| `private.key` | Your private key | Proves you own the cert |
+| `ca-bundle.crt` | Intermediate + root CA certs | Proves your cert is trusted |
+
+The **chain of trust** works like this:
+
+```
+Root CA (trusted by all browsers — built into OS/browser)
+    │ signed
+    ▼
+Intermediate CA (in ca-bundle.crt)
+    │ signed
+    ▼
+Your certificate (certificate.crt) ← your server presents this
+    │ proves
+    ▼
+Your domain (mail.clientco.com)
+```
+
+Without the ca-bundle, clients cannot verify the full chain and get "certificate not trusted" errors even though your cert is valid.
+
+---
+
+### 9.2 Install on Zimbra
+
+Zimbra's `zmcertmgr` handles the deployment and needs all three files.
+
+#### Step 1 — Copy files to Zimbra server
+
+```bash
+# Copy your three files to the server
+scp certificate.crt admin@zimbra-server:/tmp/
+scp private.key     admin@zimbra-server:/tmp/
+scp ca-bundle.crt   admin@zimbra-server:/tmp/
+
+# Set correct permissions
+sudo chmod 600 /tmp/private.key
+sudo chmod 644 /tmp/certificate.crt
+sudo chmod 644 /tmp/ca-bundle.crt
+```
+
+#### Step 2 — Verify the certificate matches the key
+
+```bash
+# The modulus of cert and key must match exactly
+openssl x509 -noout -modulus -in /tmp/certificate.crt | md5sum
+openssl rsa  -noout -modulus -in /tmp/private.key     | md5sum
+# Both md5sum values MUST be identical — if not, wrong key for this cert
+
+# Verify cert details
+openssl x509 -in /tmp/certificate.crt -noout -subject -issuer -dates
+# Check: CN matches your hostname, dates are valid
+```
+
+#### Step 3 — Verify the CA bundle completes the chain
+
+```bash
+# Verify the full chain is complete
+openssl verify -CAfile /tmp/ca-bundle.crt /tmp/certificate.crt
+# Expected: certificate.crt: OK
+# If error: untrusted certificate — the ca-bundle may be incomplete
+```
+
+#### Step 4 — Deploy via zmcertmgr
+
+```bash
+su - zimbra
+
+# Verify the cert package before deploying (catches errors early)
+zmcertmgr verifycrt comm \
+  /tmp/certificate.crt \
+  /tmp/private.key \
+  /tmp/ca-bundle.crt
+
+# If verification passes, deploy to all Zimbra services
+zmcertmgr deploycrt comm \
+  /tmp/certificate.crt \
+  /tmp/private.key \
+  /tmp/ca-bundle.crt
+
+# Expected output:
+# ** Deploying cert /tmp/certificate.crt
+# ** Verifying cert /tmp/certificate.crt against CA /tmp/ca-bundle.crt
+# Certificate and private key match.
+# ** Installing mailboxd certificate and key.
+# ** Installing MTA certificate and key.
+# ** Installing LDAP certificate and key.
+# ** Installing Proxy certificate and key.
+# Done.
+```
+
+#### Step 5 — Restart services to load the new cert
+
+```bash
+su - zimbra
+
+# Restart proxy (handles HTTPS for webmail and IMAP/POP3)
+zmproxyctl restart
+
+# Restart mailboxd (Jetty — handles admin console and webmail backend)
+zmmailboxdctl restart
+
+# Or restart everything
+zmcontrol restart
+```
+
+#### Step 6 — Verify the new cert is live on each port
+
+```bash
+# Webmail HTTPS (port 8443)
+openssl s_client -connect zimbra-server:8443 </dev/null 2>/dev/null \
+  | openssl x509 -noout -subject -issuer -dates
+
+# SMTP STARTTLS (port 25)
+openssl s_client -connect zimbra-server:25 -starttls smtp 2>/dev/null \
+  | openssl x509 -noout -subject -issuer -dates
+
+# IMAPS (port 7993 internal, 993 via proxy)
+openssl s_client -connect zimbra-server:7993 </dev/null 2>/dev/null \
+  | openssl x509 -noout -subject -issuer -dates
+
+# Admin console (port 7071)
+openssl s_client -connect zimbra-server:7071 </dev/null 2>/dev/null \
+  | openssl x509 -noout -subject -issuer -dates
+
+# Check issuer — should show your CA, not "Zimbra" (self-signed)
+# Expected issuer: O=DigiCert / O=Let's Encrypt / O=Sectigo / etc.
+# NOT: O=Zimbra (that's the default self-signed cert)
+```
+
+#### Step 7 — Verify from a browser
+
+```
+Open: https://zimbra-server:8443
+Click the padlock icon → Certificate details
+Verify:
+  Subject:    CN=mail.clientco.com
+  Issuer:     (your CA name)
+  Valid from: (issue date)
+  Valid to:   (expiry date — set a calendar reminder)
+  Chain:      All certificates in chain shown as trusted
+```
+
+#### Common Zimbra cert errors and fixes
+
+```bash
+# Error: "certificate and private key mismatch"
+# Fix: You have the wrong key file — get the correct private.key from your CA request
+
+# Error: "unable to verify the first certificate"
+# Fix: ca-bundle is incomplete — concatenate intermediate + root CAs:
+cat intermediate.crt root.crt > ca-bundle-combined.crt
+zmcertmgr deploycrt comm certificate.crt private.key ca-bundle-combined.crt
+
+# Error: "certificate has expired"
+openssl x509 -in /tmp/certificate.crt -noout -dates
+# Contact your CA for renewal
+
+# Error after deploy — webmail shows old cert
+# Force reload the cert from disk:
+zmcertmgr viewdeployedcrt mailboxd   # check what's deployed
+zmcontrol restart                     # full restart if needed
+
+# View currently deployed cert
+zmcertmgr viewdeployedcrt mailboxd
+zmcertmgr viewdeployedcrt mta
+zmcertmgr viewdeployedcrt ldap
+zmcertmgr viewdeployedcrt proxy
+```
+
+---
+
+### 9.3 Install on Axigen
+
+Axigen requires cert + key in a **single combined PEM file**. The ca-bundle goes in separately.
+
+#### Step 1 — Copy files to Axigen server
+
+```bash
+scp certificate.crt admin@axigen-server:/tmp/
+scp private.key     admin@axigen-server:/tmp/
+scp ca-bundle.crt   admin@axigen-server:/tmp/
+
+sudo chmod 600 /tmp/private.key
+sudo chmod 644 /tmp/certificate.crt
+sudo chmod 644 /tmp/ca-bundle.crt
+```
+
+#### Step 2 — Verify files before combining
+
+```bash
+# Verify cert and key match (modulus must be identical)
+openssl x509 -noout -modulus -in /tmp/certificate.crt | md5sum
+openssl rsa  -noout -modulus -in /tmp/private.key     | md5sum
+# Must match — if not, wrong key
+
+# Verify cert details
+openssl x509 -in /tmp/certificate.crt -noout -subject -issuer -dates
+
+# Verify chain
+openssl verify -CAfile /tmp/ca-bundle.crt /tmp/certificate.crt
+# Expected: OK
+```
+
+#### Step 3 — Create the combined PEM file
+
+Axigen needs cert + ca-bundle + key all in one file, in this specific order:
+
+```bash
+# Create the target directory
+sudo mkdir -p /var/opt/axigen/ssl/clientco
+
+# Combine in correct order:
+# 1. Your certificate first
+# 2. CA bundle (intermediate + root) second
+# 3. Private key last
+sudo bash -c 'cat \
+  /tmp/certificate.crt \
+  /tmp/ca-bundle.crt \
+  /tmp/private.key \
+  > /var/opt/axigen/ssl/clientco/mail.clientco.com.pem'
+
+# Set ownership and permissions
+sudo chown axigen:axigen /var/opt/axigen/ssl/clientco/mail.clientco.com.pem
+sudo chmod 600 /var/opt/axigen/ssl/clientco/mail.clientco.com.pem
+
+# Verify the combined file has all expected sections
+echo "Sections in combined PEM:"
+grep "BEGIN" /var/opt/axigen/ssl/clientco/mail.clientco.com.pem
+# Expected output (3 lines minimum):
+# -----BEGIN CERTIFICATE-----      ← your cert
+# -----BEGIN CERTIFICATE-----      ← intermediate CA
+# -----BEGIN CERTIFICATE-----      ← root CA (if included in bundle)
+# -----BEGIN PRIVATE KEY-----      ← your key
+```
+
+#### Step 4 — Add the CA bundle to system trust store
+
+This makes Axigen trust the CA for outbound TLS verification to other servers:
+
+```bash
+# Copy ca-bundle to system trust store
+sudo cp /tmp/ca-bundle.crt \
+  /usr/local/share/ca-certificates/clientco-ca-bundle.crt
+
+# Update system trust store
+sudo update-ca-certificates
+# Expected: X added (where X is number of certs in bundle)
+
+# Verify it was added
+ls /etc/ssl/certs/ | grep clientco
+```
+
+#### Step 5 — Import into Axigen WebAdmin
+
+```
+WebAdmin → SECURITY & FILTERING → SSL Certificates → + ADD
+
+Option A — Upload file:
+  Click "+ ADD"
+  Source: Upload PEM file
+  File:   /var/opt/axigen/ssl/clientco/mail.clientco.com.pem
+  Name:   mail.clientco.com
+  → Save
+
+Option B — Paste content:
+  Click "+ ADD"
+  Source: Paste PEM content
+  Paste the entire content of mail.clientco.com.pem
+  → Save
+```
+
+Alternatively, place the PEM file in the Axigen certs directory so WebAdmin auto-discovers it:
+
+```bash
+# Axigen looks for certs in its working directory under 'certs' folder
+sudo cp /var/opt/axigen/ssl/clientco/mail.clientco.com.pem \
+  /var/opt/axigen/certs/
+
+sudo chown axigen:axigen /var/opt/axigen/certs/mail.clientco.com.pem
+
+# Restart Axigen to pick up the new cert
+sudo systemctl restart axigen
+
+# Then in WebAdmin → SSL Certificates
+# The new cert should appear automatically from the certs/ directory
+```
+
+#### Step 6 — Assign cert to all services in WebAdmin
+
+```
+WebAdmin → SERVICES → SMTP Receiving
+  → Security/TLS tab
+  SSL Certificate: mail.clientco.com  ← select from dropdown
+  → Save
+
+WebAdmin → SERVICES → IMAP
+  → Security/TLS tab
+  SSL Certificate: mail.clientco.com
+  → Save
+
+WebAdmin → SERVICES → WebMail
+  → Security/TLS tab
+  SSL Certificate: mail.clientco.com
+  → Save
+
+WebAdmin → SERVICES → WebAdmin
+  → Security/TLS tab
+  SSL Certificate: mail.clientco.com
+  → Save
+```
+
+#### Step 7 — Restart Axigen and verify
+
+```bash
+sudo systemctl restart axigen
+sleep 5
+sudo systemctl status axigen
+
+# Verify new cert is served on each port
+echo "=== SMTP port 25 ==="
+openssl s_client -connect axigen-server:25 -starttls smtp 2>/dev/null \
+  | openssl x509 -noout -subject -issuer -dates
+
+echo "=== IMAPS port 993 ==="
+openssl s_client -connect axigen-server:993 </dev/null 2>/dev/null \
+  | openssl x509 -noout -subject -issuer -dates
+
+echo "=== Webmail HTTPS port 443 ==="
+openssl s_client -connect axigen-server:443 </dev/null 2>/dev/null \
+  | openssl x509 -noout -subject -issuer -dates
+
+echo "=== WebAdmin HTTPS port 9443 ==="
+openssl s_client -connect axigen-server:9443 </dev/null 2>/dev/null \
+  | openssl x509 -noout -subject -issuer -dates
+
+# Check issuer — should show your CA name, not "Axigen" (self-signed)
+```
+
+#### Common Axigen cert errors and fixes
+
+```bash
+# Error: "unknown CA" when other servers connect via STARTTLS
+# Cause: ca-bundle not included in combined PEM, or system trust not updated
+# Fix:
+sudo bash -c 'cat certificate.crt ca-bundle.crt private.key \
+  > /var/opt/axigen/ssl/clientco/mail.clientco.com.pem'
+sudo chown axigen:axigen /var/opt/axigen/ssl/clientco/mail.clientco.com.pem
+sudo systemctl restart axigen
+
+# Error: "certificate verify failed" from Zimbra connecting to Axigen
+# Cause: Zimbra does not trust Axigen's CA
+# Fix: Add CA bundle to Zimbra's trust store
+su - zimbra
+cp /tmp/ca-bundle.crt /opt/zimbra/conf/ca/additional_ca.pem
+zmcertmgr deploycrt self   # refresh Zimbra CA trust
+zmcontrol restart
+
+# Error: Cert uploaded but WebAdmin still shows old cert
+# Fix: Clear browser cache + restart Axigen
+sudo systemctl restart axigen
+
+# Error: "BEGIN PRIVATE KEY not found" when uploading PEM
+# Cause: Key not included in PEM file or in wrong order
+# Fix: Rebuild the combined PEM in correct order:
+sudo bash -c 'cat certificate.crt ca-bundle.crt private.key > combined.pem'
+grep "BEGIN" combined.pem   # verify all sections present
+
+# Verify combined PEM is valid before importing
+sudo openssl x509 -in /var/opt/axigen/ssl/clientco/mail.clientco.com.pem \
+  -noout -subject
+# Should print subject without error
+```
+
+---
+
+### 9.4 Certificate Installation Comparison
+
+| Step | Zimbra | Axigen |
+|---|---|---|
+| Files needed | crt + key + ca-bundle (separate) | crt + ca-bundle + key (combined into one PEM) |
+| Tool used | `zmcertmgr deploycrt comm` | WebAdmin → SSL Certificates → + ADD |
+| File order | zmcertmgr handles order | crt → ca-bundle → key in PEM |
+| Services restart | `zmproxyctl restart` + `zmmailboxdctl restart` | `systemctl restart axigen` |
+| Verify deployed | `zmcertmgr viewdeployedcrt mailboxd` | `openssl s_client -connect host:993` |
+| CA trust store | Zimbra manages internally | `update-ca-certificates` on OS |
+| Assign to services | Automatic — zmcertmgr deploys to all | Manual — assign in each service's TLS tab |
+
+---
+
+### 9.5 Quick Verification Script — Both Servers
+
+```bash
+#!/bin/bash
+# /tmp/verify_certs.sh
+# Run after installing certificates to confirm all ports serve correct cert
+
+ZIMBRA="10.10.10.110"
+AXIGEN="10.10.10.111"
+EXPECTED_CN="mail.clientco.com"   # change to match your cert CN
+
+check_cert() {
+  local HOST=$1
+  local PORT=$2
+  local STARTTLS=$3
+  local LABEL=$4
+
+  if [ "$STARTTLS" = "smtp" ]; then
+    RESULT=$(openssl s_client -connect "${HOST}:${PORT}" \
+      -starttls smtp </dev/null 2>/dev/null \
+      | openssl x509 -noout -subject -dates 2>/dev/null)
+  else
+    RESULT=$(openssl s_client -connect "${HOST}:${PORT}" \
+      </dev/null 2>/dev/null \
+      | openssl x509 -noout -subject -dates 2>/dev/null)
+  fi
+
+  if echo "$RESULT" | grep -q "$EXPECTED_CN"; then
+    echo "  ✓ $LABEL — CN matches"
+  else
+    CN=$(echo "$RESULT" | grep "subject=" | head -1)
+    echo "  ✗ $LABEL — unexpected cert: $CN"
+  fi
+
+  EXPIRY=$(echo "$RESULT" | grep "notAfter" | awk -F= '{print $2}')
+  echo "    Expires: $EXPIRY"
+}
+
+echo "=== Zimbra ($ZIMBRA) ==="
+check_cert "$ZIMBRA" "8443" ""     "Webmail HTTPS :8443"
+check_cert "$ZIMBRA" "25"   "smtp" "SMTP STARTTLS :25"
+check_cert "$ZIMBRA" "7993" ""     "IMAPS :7993"
+check_cert "$ZIMBRA" "7071" ""     "Admin Console :7071"
+
+echo ""
+echo "=== Axigen ($AXIGEN) ==="
+check_cert "$AXIGEN" "443"  ""     "Webmail HTTPS :443"
+check_cert "$AXIGEN" "25"   "smtp" "SMTP STARTTLS :25"
+check_cert "$AXIGEN" "993"  ""     "IMAPS :993"
+check_cert "$AXIGEN" "9443" ""     "WebAdmin HTTPS :9443"
+```
+
+```bash
+chmod +x /tmp/verify_certs.sh
+/tmp/verify_certs.sh
+```
+
+---
+*Sections 8 and 9 added — Distribution Lists and CA Bundle/CRT/Key Installation*
+*Zimbra 10.1.16 + Axigen 10.6.35 | July 2026*
+
+---
+
+## 10. Email Size Limits — Increase and Decrease
+
+### 10.1 What Controls Email Size
+
+Email size limits exist at multiple layers. Every layer in the chain enforces its own limit — the **smallest value wins**. If any single layer rejects the message, delivery fails regardless of what the other layers allow.
+
+```
+Sender mail client
+      │ enforces: attachment size limit in client (Outlook/Thunderbird setting)
+      ▼
+Sender MTA (Zimbra or Axigen)
+      │ enforces: message_size_limit (Postfix) or max message size (Axigen SMTP)
+      ▼
+Relay server (if used)
+      │ enforces: its own message_size_limit
+      ▼
+Receiver MTA (Zimbra or Axigen)
+      │ enforces: its own incoming message size limit
+      ▼
+Recipient mailbox
+      │ enforces: mailbox quota (if quota full, message rejected)
+      ▼
+Recipient reads message
+```
+
+**Common size values:**
+
+| Limit | Meaning |
+|---|---|
+| 10 MB | Default Zimbra limit |
+| 10 MB | Default Axigen limit (shown as 10485760 bytes in SMTP banner) |
+| 25 MB | Gmail limit |
+| 20 MB | Outlook.com limit |
+| 50 MB | Typical corporate recommended max |
+
+> **Note:** Email encoding (Base64 for attachments) adds ~33% overhead. A 25 MB attachment becomes ~34 MB in the actual email message. Always account for this when setting limits.
+
+---
+
+### 10.2 Size Limits on Zimbra
+
+Zimbra has size limits at three separate levels:
+
+| Level | What it controls | Command to change |
+|---|---|---|
+| MTA (Postfix) | Maximum raw message size Postfix accepts | `postconf -e message_size_limit` |
+| Mailbox (Jetty) | Maximum upload size via webmail | `zmprov mcf zimbraMtaMaxMessageSize` |
+| Per-domain | Override for a specific domain | `zmprov md DOMAIN zimbraMailContentMaxSize` |
+| Per-account | Override for a specific user | `zmprov ma USER zimbraMailContentMaxSize` |
+
+#### View current limits
+
+```bash
+su - zimbra
+
+# MTA level (Postfix)
+postconf message_size_limit
+# Default: 10240000 (bytes = ~10 MB)
+
+# Global config level
+zmprov gcf zimbraMtaMaxMessageSize
+# Should match Postfix
+
+# Per-domain override (if set)
+zmprov gd clientco.com | grep zimbraMailContentMaxSize
+
+# Per-account override (if set)
+zmprov ga user@clientco.com | grep zimbraMailContentMaxSize
+```
+
+#### Increase size limit (global — affects all domains)
+
+```bash
+su - zimbra
+
+# Example: increase to 50 MB
+# 50 MB = 52428800 bytes
+
+# Step 1: Update Zimbra global config
+zmprov mcf zimbraMtaMaxMessageSize 52428800
+
+# Step 2: Update Postfix directly (must match)
+postconf -e "message_size_limit = 52428800"
+
+# Step 3: Restart MTA to apply
+zmmtactl restart
+
+# Step 4: Verify both values match
+postconf message_size_limit
+zmprov gcf zimbraMtaMaxMessageSize
+# Both must show: 52428800
+```
+
+#### Decrease size limit (global)
+
+```bash
+su - zimbra
+
+# Example: decrease to 5 MB
+# 5 MB = 5242880 bytes
+
+zmprov mcf zimbraMtaMaxMessageSize 5242880
+postconf -e "message_size_limit = 5242880"
+zmmtactl restart
+
+# Verify
+postconf message_size_limit
+# Shows: message_size_limit = 5242880
+```
+
+#### Set size limit per domain
+
+```bash
+su - zimbra
+
+# Set 25 MB limit for clientco.com only
+# 25 MB = 26214400 bytes
+zmprov md clientco.com zimbraMailContentMaxSize 26214400
+
+# Set a tighter 5 MB limit for a small domain
+zmprov md smalldomain.com zimbraMailContentMaxSize 5242880
+
+# Remove per-domain override (revert to global)
+zmprov md clientco.com zimbraMailContentMaxSize 0
+# 0 means inherit from global setting
+
+# Verify
+zmprov gd clientco.com | grep zimbraMailContentMaxSize
+```
+
+#### Set size limit per account
+
+```bash
+su - zimbra
+
+# Give one user a higher limit (e.g. CEO gets 100 MB)
+# 100 MB = 104857600 bytes
+zmprov ma ceo@clientco.com zimbraMailContentMaxSize 104857600
+
+# Give a restricted account a lower limit
+zmprov ma intern@clientco.com zimbraMailContentMaxSize 2097152
+# 2 MB limit for this account
+
+# Remove per-account override (revert to domain/global)
+zmprov ma intern@clientco.com zimbraMailContentMaxSize 0
+
+# Verify
+zmprov ga ceo@clientco.com | grep zimbraMailContentMaxSize
+```
+
+#### Set webmail attachment upload limit
+
+Zimbra's webmail has a separate upload size limit for the browser interface:
+
+```bash
+su - zimbra
+
+# View current upload limit
+zmprov gcf zimbraFileUploadMaxSize
+
+# Set to 50 MB
+zmprov mcf zimbraFileUploadMaxSize 52428800
+
+# Also set the nginx upload limit (proxy layer)
+zmprov mcf zimbraMailContentMaxSize 52428800
+
+# Restart services
+zmproxyctl restart
+zmmailboxdctl restart
+```
+
+#### Test size limit enforcement
+
+```bash
+su - zimbra
+
+# Create a test file exactly at the limit
+dd if=/dev/urandom of=/tmp/testfile_10mb.bin bs=1M count=10
+
+# Try to send it as an attachment using swaks
+swaks --to admin@clientco.com \
+      --from info@clientco.com \
+      --server 10.10.10.110 \
+      --port 25 \
+      --header "Subject: Size limit test 10MB" \
+      --attach /tmp/testfile_10mb.bin
+
+# Check the result in log
+grep "size limit\|message size\|552\|552" /var/log/zimbra.log | tail -5
+# If message exceeds limit:
+# 552 5.3.4 Error: message file too large
+
+# Create a file above the limit
+dd if=/dev/urandom of=/tmp/testfile_60mb.bin bs=1M count=60
+
+swaks --to admin@clientco.com \
+      --from info@clientco.com \
+      --server 10.10.10.110 \
+      --port 25 \
+      --header "Subject: Size limit test 60MB — should be rejected" \
+      --attach /tmp/testfile_60mb.bin
+# Expected: 552 Error: message file too large
+
+# Clean up test files
+rm /tmp/testfile_*.bin
+```
+
+#### Common byte values reference
+
+```bash
+# Quick reference — paste these values directly into commands
+# 1 MB   =    1048576
+# 2 MB   =    2097152
+# 5 MB   =    5242880
+# 10 MB  =   10485760   ← Zimbra/Axigen default
+# 20 MB  =   20971520
+# 25 MB  =   26214400   ← Gmail limit
+# 50 MB  =   52428800   ← recommended max
+# 100 MB =  104857600
+# 150 MB =  157286400
+# 200 MB =  209715200
+
+# Convert MB to bytes in bash
+python3 -c "print(50 * 1024 * 1024)"
+# Output: 52428800
+```
+
+---
+
+### 10.3 Size Limits on Axigen
+
+Axigen has size limits at three levels: global server, per-domain, and per-account.
+
+#### View current limits
+
+```
+WebAdmin → SERVICES → SMTP Receiving
+  → General tab
+  Look for: Maximum message size
+  Current value shown in bytes or MB
+```
+
+```bash
+# Also visible in SMTP banner
+echo "QUIT" | nc 10.10.10.111 25 | grep SIZE
+# 250-SIZE 10485760   ← current limit in bytes
+```
+
+#### Increase/Decrease via WebAdmin
+
+```
+WebAdmin → SERVICES → SMTP Receiving
+  → General tab
+    Maximum message size: 52428800   (50 MB in bytes)
+                          OR
+    Maximum message size: 52          (50 MB if shown in MB)
+  → Save
+
+WebAdmin → SERVICES → SMTP Sending
+  → General tab
+    Maximum message size: 52428800
+  → Save
+
+→ Restart SMTP Receiving and SMTP Sending services:
+  WebAdmin → SERVICES → Services Management
+    SMTP Receiving → Restart (↺ button)
+    SMTP Sending   → Restart (↺ button)
+```
+
+#### Set size limit per domain
+
+```
+WebAdmin → DOMAINS & ACCOUNTS → Manage Domains → clientco.com
+  → Account Defaults tab (or Limits tab)
+    Maximum message size:  26214400   (25 MB)
+  → Save
+```
+
+#### Set size limit per account
+
+```
+WebAdmin → DOMAINS & ACCOUNTS → Manage Accounts → user@clientco.com
+  → Limits tab (or Settings tab)
+    Maximum message size:  5242880   (5 MB for this account)
+  → Save
+```
+
+#### Via Axigen CLI
+
+```bash
+# Set global SMTP receive limit
+sudo axigen-cli << 'EOF'
+set smtpReceiving maxMessageSize=52428800
+commit
+EOF
+
+# Set per-domain limit
+sudo axigen-cli << 'EOF'
+select domain "clientco.com"
+set domain maxMessageSize=26214400
+commit
+EOF
+
+# Set per-account limit
+sudo axigen-cli << 'EOF'
+select domain "clientco.com"
+set account "info" maxMessageSize=5242880
+commit
+EOF
+```
+
+#### Verify the limit is active
+
+```bash
+# Check SMTP banner shows new SIZE value
+echo "QUIT" | nc 10.10.10.111 25 | grep SIZE
+# Expected: 250-SIZE 52428800  (if you set 50 MB)
+
+# Test with a large file
+dd if=/dev/urandom of=/tmp/testfile_60mb.bin bs=1M count=60
+
+swaks --to admin@school.accesswt.com \
+      --from info@consultancy.accesswt.com \
+      --server 10.10.10.111 \
+      --port 25 \
+      --header "Subject: Axigen size limit test" \
+      --attach /tmp/testfile_60mb.bin
+# Expected if file exceeds limit: 552 Message too large
+
+# Check Axigen log for size rejection
+sudo grep -i "size\|too large\|552" \
+  /var/opt/axigen/log/everything.txt | tail -10
+
+rm /tmp/testfile_60mb.bin
+```
+
+---
+
+### 10.4 Mailbox Quota vs Message Size — the difference
+
+These are two different limits that are often confused:
+
+| Setting | What it limits | Set where |
+|---|---|---|
+| **Message size limit** | Maximum size of ONE email (message + attachments) | MTA level — Postfix / Axigen SMTP |
+| **Mailbox quota** | Total size of ALL mail in a mailbox | Mailbox level — per account |
+
+```
+Message size limit = 25 MB
+  → Each individual email can be at most 25 MB
+  → Applies whether mailbox is full or empty
+
+Mailbox quota = 1 GB
+  → The total of all emails in the mailbox cannot exceed 1 GB
+  → When quota is full, new mail is rejected with a bounce
+```
+
+#### When quota is full on Zimbra
+
+```bash
+su - zimbra
+
+# Check current quota usage for an account
+zmmailbox -z -m user@clientco.com getMailboxStats
+# Shows: size (bytes used), quota (bytes allowed)
+
+# Increase quota for one user
+zmprov ma user@clientco.com zimbraMailQuota 2147483648
+# 2147483648 bytes = 2 GB
+
+# Remove quota limit (unlimited)
+zmprov ma user@clientco.com zimbraMailQuota 0
+
+# Check who is over quota
+su - zimbra
+for ACCOUNT in $(zmprov -l gaa clientco.com); do
+  STATS=$(zmmailbox -z -m "$ACCOUNT" getMailboxStats 2>/dev/null)
+  SIZE=$(echo "$STATS" | grep "mailboxSize" | awk '{print $2}' | tr -d ',')
+  QUOTA=$(zmprov ga "$ACCOUNT" zimbraMailQuota 2>/dev/null \
+    | grep zimbraMailQuota | awk '{print $2}')
+  if [ -n "$SIZE" ] && [ -n "$QUOTA" ] && [ "$QUOTA" -gt 0 ]; then
+    PCT=$((SIZE * 100 / QUOTA))
+    echo "$ACCOUNT: ${PCT}% used (${SIZE}/${QUOTA} bytes)"
+  fi
+done
+```
+
+#### When quota is full on Axigen
+
+```bash
+# Check quota usage via IMAP
+python3 << 'EOF'
+import imaplib
+
+m = imaplib.IMAP4_SSL("10.10.10.111", 993)
+m.login("user@school.accesswt.com", "password")
+
+# IMAP GETQUOTAROOT command
+typ, data = m.getquotaroot("INBOX")
+print("Quota roots:", data)
+
+typ, quota_data = m.getquota(data[1].decode().strip())
+print("Quota:", quota_data)
+# Shows: STORAGE used_kb limit_kb
+
+m.logout()
+EOF
+
+# Increase quota in WebAdmin
+# DOMAINS & ACCOUNTS → Manage Accounts → user@school.accesswt.com
+# → Limits tab → Disk quota: 2048 MB → Save
+```
+
+---
+
+### 10.5 Size Limit Summary Table
+
+| Setting | Zimbra command | Axigen location | Default |
+|---|---|---|---|
+| Global message size | `zmprov mcf zimbraMtaMaxMessageSize BYTES` + `postconf -e message_size_limit=BYTES` | WebAdmin → SMTP Receiving → Max message size | 10 MB |
+| Per-domain message size | `zmprov md DOMAIN zimbraMailContentMaxSize BYTES` | WebAdmin → Domains → domain → Limits | Inherits global |
+| Per-account message size | `zmprov ma USER zimbraMailContentMaxSize BYTES` | WebAdmin → Accounts → account → Limits | Inherits domain |
+| Webmail upload size | `zmprov mcf zimbraFileUploadMaxSize BYTES` | Included in SMTP limit | Same as MTA |
+| Per-account mailbox quota | `zmprov ma USER zimbraMailQuota BYTES` | WebAdmin → Accounts → account → Limits → Disk quota | 0 (unlimited) |
+| Per-domain total quota | `zmprov md DOMAIN zimbraDomainAggregateQuota BYTES` | WebAdmin → Domains → domain → Limits → Total quota | 0 (unlimited) |
+
+---
+
+### 10.6 Recommended Size Limits by Client Type
+
+| Client type | Suggested message size | Suggested mailbox quota |
+|---|---|---|
+| School (students) | 10 MB | 500 MB |
+| School (staff/admin) | 25 MB | 2 GB |
+| Hospital (clinical staff) | 25 MB | 5 GB |
+| Hospital (admin) | 25 MB | 2 GB |
+| Fitness (small team) | 25 MB | 1 GB |
+| Consultancy (professional) | 50 MB | 5 GB |
+| Microfinance (compliance heavy) | 25 MB | 10 GB |
+
+Apply these via:
+
+```bash
+su - zimbra
+
+# School example
+zmprov md school.accesswt.com \
+  zimbraMailContentMaxSize 26214400 \
+  zimbraMailQuota 524288000 \
+  zimbraDomainAggregateQuota 53687091200
+
+# Consultancy example
+zmprov md consultancy.accesswt.com \
+  zimbraMailContentMaxSize 52428800 \
+  zimbraMailQuota 5368709120 \
+  zimbraDomainAggregateQuota 107374182400
+```
+
+---
+*Section 10 added — Email Size Limits*
+*Zimbra 10.1.16 + Axigen 10.6.35 | July 2026*
 ---
 
 ## 17. Security Hardening Summary
